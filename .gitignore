@@ -1,0 +1,6 @@
+.env
+/wardstone
+coverage.out
+*.prof
+.idea/
+.vscode/

@@ -1,0 +1,13 @@
+capabilities:
+  google.users.get:
+    mode: allow
+  google.users.list_groups:
+    mode: allow
+  google.groups.get:
+    mode: allow
+  google.groups.list_members:
+    mode: allow
+  google.groups.add_member:
+    mode: approval
+  google.groups.remove_member:
+    mode: approval

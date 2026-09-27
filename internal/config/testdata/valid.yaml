@@ -1,0 +1,5 @@
+capabilities:
+  google.users.get:
+    mode: allow
+  google.groups.add_member:
+    mode: approval
