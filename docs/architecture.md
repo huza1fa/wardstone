@@ -20,7 +20,8 @@ until an external connector/plugin contract is stable enough to support.
 
 | Package | Responsibility |
 | --- | --- |
-| `internal/api` | HTTP control plane, input validation, status and timeline views |
+| `internal/admin` | Transport-neutral operator read models shared by web and terminal views |
+| `internal/api` | HTTP control plane, admin API, embedded web console, input validation, status and timeline views |
 | `internal/config` | Environment configuration and validation |
 | `internal/database` | PostgreSQL pool and durable repository implementations |
 | `internal/audit` | Append-only event types and timeline access |
@@ -34,7 +35,22 @@ until an external connector/plugin contract is stable enough to support.
 | `internal/investigations` | Ordered workflow and concurrent evidence collection |
 | `internal/worker` | Bounded workers over durably leased jobs |
 | `internal/sandbox` | Unprivileged research runtime contract |
+| `internal/tui` | Charm terminal client and presentation model over the operator API |
 | `internal/domain` | Domain types and invariants shared by internal modules |
+
+## Operator surfaces
+
+The embedded web console and the standalone terminal console consume the same
+Bearer-authenticated `/v1/admin/*` API. PostgreSQL remains behind the control
+plane: clients never receive database credentials and approval decisions always
+pass through `approvals.Service`, which owns expiry, concurrency, actor, and
+audit invariants.
+
+The admin read model summarizes investigation, approval, and durable-job state.
+Clients poll this model and tolerate partial refresh failures; `/healthz`
+remains a liveness endpoint rather than the source of operational metrics. The
+browser UI stores its operator token only for the tab session. The terminal UI
+runs as a separate process and receives the token from its environment.
 
 ## Core domain
 
@@ -135,7 +151,7 @@ The first workflow emits this ordered lifecycle:
 8. `investigation.completed` or `investigation.failed`
 
 Future approval/execution stages add `approval.requested`,
-`approval.granted|denied`, `action.executed|failed`,
+`approval.granted|denied|expired`, `action.executed|failed`,
 `verification.completed`, and `ticket.updated` without changing the
 investigation contract.
 
@@ -270,7 +286,7 @@ network I/O.
 4. PostgreSQL schema and repository with transactional state/event methods.
 5. Durable worker leasing and Jira ingestion/timeline HTTP endpoints.
 6. Google read adapter and one configured model provider; retain fakes for tests.
-7. Slack approval adapter and approval state machine (inactive in SHADOW).
+7. Approval state machine (implemented and inactive in SHADOW); Slack approval adapter (pending).
 8. Privileged executor, idempotency, and verification before enabling APPROVAL.
 9. Docker sandbox, replay tooling, metrics, traces, and profiling baselines.
 10. APPROVAL and AUTONOMOUS modes only after adversarial and recovery testing.

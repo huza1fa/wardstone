@@ -30,16 +30,45 @@ type InvestigationReader interface {
 type Server struct {
 	service       InvestigationService
 	reader        InvestigationReader
+	adminReader   AdminReader
+	approvals     ApprovalService
+	mode          domain.OperatingMode
 	webhookSecret string
 	operatorToken string
 	now           func() time.Time
 }
 
-func NewServer(service InvestigationService, reader InvestigationReader, webhookSecret, operatorToken string) (*Server, error) {
+type Option func(*Server) error
+
+func WithAdmin(reader AdminReader, approvals ApprovalService, mode domain.OperatingMode) Option {
+	return func(server *Server) error {
+		if reader == nil || approvals == nil {
+			return errors.New("admin reader and approval service are required")
+		}
+		if !mode.Valid() {
+			return errors.New("valid operating mode is required")
+		}
+		server.adminReader = reader
+		server.approvals = approvals
+		server.mode = mode
+		return nil
+	}
+}
+
+func NewServer(service InvestigationService, reader InvestigationReader, webhookSecret, operatorToken string, options ...Option) (*Server, error) {
 	if service == nil || reader == nil || webhookSecret == "" || operatorToken == "" {
 		return nil, errors.New("investigation service, reader, webhook secret, and operator token are required")
 	}
-	return &Server{service: service, reader: reader, webhookSecret: webhookSecret, operatorToken: operatorToken, now: func() time.Time { return time.Now().UTC() }}, nil
+	server := &Server{service: service, reader: reader, webhookSecret: webhookSecret, operatorToken: operatorToken, now: func() time.Time { return time.Now().UTC() }}
+	for _, option := range options {
+		if option == nil {
+			return nil, errors.New("server option is required")
+		}
+		if err := option(server); err != nil {
+			return nil, err
+		}
+	}
+	return server, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -48,6 +77,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/tickets/jira", s.receiveJira)
 	mux.HandleFunc("GET /v1/investigations/{id}", s.getInvestigation)
 	mux.HandleFunc("GET /v1/investigations/{id}/timeline", s.getTimeline)
+	mux.HandleFunc("GET /v1/admin/overview", s.getAdminOverview)
+	mux.HandleFunc("GET /v1/admin/investigations", s.listAdminInvestigations)
+	mux.HandleFunc("GET /v1/admin/approvals", s.listAdminApprovals)
+	mux.HandleFunc("POST /v1/admin/approvals/{id}/decision", s.decideAdminApproval)
+	s.registerWeb(mux)
 	return mux
 }
 

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wardstone-project/wardstone/internal/approvals"
 	"github.com/wardstone-project/wardstone/internal/audit"
 	"github.com/wardstone-project/wardstone/internal/domain"
 	"github.com/wardstone-project/wardstone/internal/investigations"
@@ -19,6 +20,8 @@ type Store struct {
 	investigations map[domain.InvestigationID]domain.Investigation
 	evidence       map[domain.InvestigationID][]domain.Evidence
 	actions        map[domain.InvestigationID][]investigations.ActionEvaluation
+	approvals      map[domain.ApprovalID]domain.Approval
+	activeApproval map[domain.ActionID]domain.ApprovalID
 	events         map[domain.InvestigationID][]audit.Event
 }
 
@@ -28,6 +31,8 @@ func NewStore() *Store {
 		investigations: make(map[domain.InvestigationID]domain.Investigation),
 		evidence:       make(map[domain.InvestigationID][]domain.Evidence),
 		actions:        make(map[domain.InvestigationID][]investigations.ActionEvaluation),
+		approvals:      make(map[domain.ApprovalID]domain.Approval),
+		activeApproval: make(map[domain.ActionID]domain.ApprovalID),
 		events:         make(map[domain.InvestigationID][]audit.Event),
 	}
 }
@@ -188,6 +193,131 @@ func (s *Store) Actions(id domain.InvestigationID) []investigations.ActionEvalua
 	}
 	return result
 }
+
+func (s *Store) CreateApproval(ctx context.Context, action domain.ProposedAction, approval domain.Approval, at time.Time) (domain.Approval, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return domain.Approval{}, false, err
+	}
+
+	var persisted *investigations.ActionEvaluation
+	for i := range s.actions[action.InvestigationID] {
+		if s.actions[action.InvestigationID][i].Action.ID == action.ID {
+			persisted = &s.actions[action.InvestigationID][i]
+			break
+		}
+	}
+	if persisted == nil || persisted.Action.InvestigationID != action.InvestigationID {
+		return domain.Approval{}, false, approvals.ErrActionNotEligible
+	}
+	if persisted.Action.Digest != action.Digest || !persisted.Action.DigestValid() || !action.DigestValid() {
+		return domain.Approval{}, false, approvals.ErrActionChanged
+	}
+	if persisted.Policy.Decision != domain.PolicyRequireApproval {
+		return domain.Approval{}, false, approvals.ErrActionNotEligible
+	}
+	if approval.ID == "" || approval.ActionID != action.ID || approval.ActionDigest != action.Digest ||
+		approval.Status != domain.ApprovalPending || !approval.ExpiresAt.After(at) {
+		return domain.Approval{}, false, approvals.ErrActionChanged
+	}
+
+	if existingID, ok := s.activeApproval[action.ID]; ok {
+		existing := s.approvals[existingID]
+		if at.Before(existing.ExpiresAt) {
+			return existing, false, nil
+		}
+		s.expireApproval(existing, action.InvestigationID, at)
+	}
+
+	s.approvals[approval.ID] = approval
+	s.activeApproval[action.ID] = approval.ID
+	s.appendEvent(action.InvestigationID, audit.ApprovalRequested, audit.ActorSystem, "approvals", at, map[string]any{
+		"approval_id": approval.ID, "action_id": action.ID, "action_digest": action.Digest,
+		"expires_at": approval.ExpiresAt,
+	})
+	return approval, true, nil
+}
+
+func (s *Store) GetApproval(ctx context.Context, id domain.ApprovalID) (domain.Approval, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return domain.Approval{}, err
+	}
+	item, ok := s.approvals[id]
+	if !ok {
+		return domain.Approval{}, approvals.ErrNotFound
+	}
+	return item, nil
+}
+
+func (s *Store) DecideApproval(ctx context.Context, id domain.ApprovalID, decision domain.ApprovalStatus, actor string, at time.Time) (domain.Approval, error) {
+	if err := approvals.ValidateDecisionInput(decision, actor); err != nil {
+		return domain.Approval{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return domain.Approval{}, err
+	}
+	item, ok := s.approvals[id]
+	if !ok {
+		return domain.Approval{}, approvals.ErrNotFound
+	}
+	if item.Status == domain.ApprovalExpired {
+		return item, approvals.ErrExpired
+	}
+	if item.Status != domain.ApprovalPending {
+		return item, approvals.ErrAlreadyDecided
+	}
+	investigationID, ok := s.actionInvestigationID(item.ActionID)
+	if !ok {
+		return domain.Approval{}, approvals.ErrActionNotEligible
+	}
+	if !at.Before(item.ExpiresAt) {
+		s.expireApproval(item, investigationID, at)
+		return s.approvals[id], approvals.ErrExpired
+	}
+
+	item.Status = decision
+	item.Actor = actor
+	item.DecidedAt = timePointer(at)
+	s.approvals[id] = item
+	if decision == domain.ApprovalDenied {
+		delete(s.activeApproval, item.ActionID)
+	}
+	eventType := audit.ApprovalGranted
+	if decision == domain.ApprovalDenied {
+		eventType = audit.ApprovalDenied
+	}
+	s.appendEvent(investigationID, eventType, audit.ActorOperator, actor, at, map[string]any{
+		"approval_id": item.ID, "action_id": item.ActionID, "action_digest": item.ActionDigest,
+	})
+	return item, nil
+}
+
+func (s *Store) actionInvestigationID(actionID domain.ActionID) (domain.InvestigationID, bool) {
+	for investigationID, items := range s.actions {
+		for _, item := range items {
+			if item.Action.ID == actionID {
+				return investigationID, true
+			}
+		}
+	}
+	return "", false
+}
+
+func (s *Store) expireApproval(item domain.Approval, investigationID domain.InvestigationID, at time.Time) {
+	item.Status = domain.ApprovalExpired
+	s.approvals[item.ID] = item
+	delete(s.activeApproval, item.ActionID)
+	s.appendEvent(investigationID, audit.ApprovalExpired, audit.ActorSystem, "approvals", at, map[string]any{
+		"approval_id": item.ID, "action_id": item.ActionID, "action_digest": item.ActionDigest,
+	})
+}
+
+func timePointer(value time.Time) *time.Time { return &value }
 
 func (s *Store) requireRunning(id domain.InvestigationID) error {
 	item, ok := s.investigations[id]

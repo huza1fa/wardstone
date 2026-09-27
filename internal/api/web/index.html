@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b1016">
+  <title>Wardstone Admin</title>
+  <link rel="stylesheet" href="assets/styles.css">
+  <script src="assets/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/admin/" aria-label="Wardstone admin home">
+        <span class="brand-mark" aria-hidden="true">W</span>
+        <span><strong>Wardstone</strong><small>Control plane</small></span>
+      </a>
+      <nav aria-label="Admin navigation">
+        <a class="nav-item active" href="#overview"><span aria-hidden="true">⌂</span>Overview</a>
+        <a class="nav-item" href="#approvals"><span aria-hidden="true">✓</span>Approvals <span id="approval-badge" class="nav-badge" hidden>0</span></a>
+        <a class="nav-item" href="#investigations"><span aria-hidden="true">⌕</span>Investigations</a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="service-state"><span id="health-dot" class="health-dot"></span><span><strong id="health-label">Checking service</strong><small id="last-updated">Not connected</small></span></div>
+        <p>Operator actions are audit logged.</p>
+      </div>
+    </aside>
+
+    <main id="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">IT operations</p>
+          <h1>Admin console</h1>
+        </div>
+        <div class="top-actions">
+          <button id="refresh" class="button ghost" type="button" disabled>Refresh</button>
+          <button id="session-button" class="button" type="button">Connect</button>
+        </div>
+      </header>
+
+      <section id="connection" class="connection-panel" aria-labelledby="connection-title">
+        <div>
+          <p class="eyebrow">Operator session</p>
+          <h2 id="connection-title">Connect to the control plane</h2>
+          <p>Enter the operator token configured on this Wardstone instance. It stays in this browser tab and is cleared when you disconnect or close the tab.</p>
+        </div>
+        <form id="connection-form">
+          <label for="operator-token">Operator token</label>
+          <div class="input-row">
+            <input id="operator-token" name="token" type="password" autocomplete="off" spellcheck="false" required placeholder="Bearer token">
+            <button class="button" type="submit">Connect</button>
+          </div>
+          <p id="connection-error" class="form-error" role="alert"></p>
+        </form>
+      </section>
+
+      <div id="dashboard" hidden>
+        <section id="overview" aria-labelledby="overview-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">Live posture</p><h2 id="overview-title">System overview</h2></div>
+            <span id="mode-badge" class="mode-badge">—</span>
+          </div>
+          <div class="metric-grid">
+            <article class="metric-card"><span class="metric-icon blue" aria-hidden="true">◉</span><div><p>Active investigations</p><strong id="metric-active">—</strong><small id="metric-active-note">Pending + running</small></div></article>
+            <article class="metric-card"><span class="metric-icon amber" aria-hidden="true">!</span><div><p>Awaiting approval</p><strong id="metric-approvals">—</strong><small>Operator decision required</small></div></article>
+            <article class="metric-card"><span class="metric-icon green" aria-hidden="true">✓</span><div><p>Completed</p><strong id="metric-completed">—</strong><small id="metric-completed-note">Investigations</small></div></article>
+            <article class="metric-card"><span class="metric-icon red" aria-hidden="true">×</span><div><p>Needs attention</p><strong id="metric-attention">—</strong><small>Failed investigations + jobs</small></div></article>
+          </div>
+        </section>
+
+        <section id="approvals" aria-labelledby="approvals-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">Decision queue</p><h2 id="approvals-title">Approval requests</h2></div>
+            <span class="section-note">Pending only</span>
+          </div>
+          <div id="approval-list" class="approval-list" aria-live="polite"></div>
+        </section>
+
+        <section id="investigations" aria-labelledby="investigations-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">Recent work</p><h2 id="investigations-title">Investigations</h2></div>
+            <span class="section-note">Newest 100</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Ticket</th><th>Status</th><th>Diagnosis</th><th>Created</th><th><span class="sr-only">View</span></th></tr></thead>
+              <tbody id="investigation-list"></tbody>
+            </table>
+            <div id="investigation-empty" class="empty-state" hidden><span aria-hidden="true">◇</span><h3>No investigations yet</h3><p>New Jira work will appear here after it is ingested.</p></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="investigation-dialog" aria-labelledby="dialog-title">
+    <div class="dialog-head"><div><p class="eyebrow">Investigation detail</p><h2 id="dialog-title">Investigation</h2></div><button id="dialog-close" class="icon-button" type="button" aria-label="Close">×</button></div>
+    <div id="dialog-body" class="dialog-body"></div>
+  </dialog>
+
+  <dialog id="decision-dialog" aria-labelledby="decision-title">
+    <form id="decision-form">
+      <input id="decision-id" type="hidden">
+      <input id="decision-value" type="hidden">
+      <div class="dialog-head"><div><p class="eyebrow">Confirm decision</p><h2 id="decision-title">Approval request</h2></div><button class="icon-button dialog-cancel" type="button" aria-label="Close">×</button></div>
+      <p id="decision-copy"></p>
+      <label for="decision-actor">Operator identity</label>
+      <input id="decision-actor" required maxlength="256" autocomplete="email" placeholder="you@example.com">
+      <p id="decision-error" class="form-error" role="alert"></p>
+      <div class="dialog-actions"><button class="button ghost dialog-cancel" type="button">Cancel</button><button id="decision-submit" class="button" type="submit">Confirm</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

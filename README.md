@@ -36,6 +36,22 @@ executed in this mode.
 See [the architecture](docs/architecture.md) for design details and
 [development setup](docs/development.md) for local commands.
 
+## Operator interfaces
+
+Wardstone exposes two operator views backed by the same authenticated admin
+API:
+
+- a responsive web console at `/admin/` for service status, investigation
+  history, audit timelines, and approval requests; and
+- a Charm-based terminal console with overview, investigation, and approval
+  views.
+
+Both interfaces require `WARDSTONE_OPERATOR_TOKEN`. Approval decisions are
+recorded through the approval service and immutable audit timeline; neither UI
+updates database state directly. The current runtime remains restricted to
+**SHADOW** mode, so approval queues are normally empty until approval mode and
+request dispatch are enabled.
+
 ## Status
 
 Wardstone is at an early bootstrap stage. Interfaces and schemas are expected

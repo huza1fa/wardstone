@@ -25,9 +25,9 @@ func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 		pool.Close()
 		return nil, fmt.Errorf("verify database schema: %w", err)
 	}
-	if version != 1 {
+	if version != 2 {
 		pool.Close()
-		return nil, fmt.Errorf("unsupported database schema version %d (expected 1)", version)
+		return nil, fmt.Errorf("unsupported database schema version %d (expected 2)", version)
 	}
 	return pool, nil
 }

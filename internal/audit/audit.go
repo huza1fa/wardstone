@@ -21,6 +21,7 @@ const (
 	ApprovalRequested        EventType = "approval.requested"
 	ApprovalGranted          EventType = "approval.granted"
 	ApprovalDenied           EventType = "approval.denied"
+	ApprovalExpired          EventType = "approval.expired"
 	ActionExecuted           EventType = "action.executed"
 	ActionFailed             EventType = "action.failed"
 	VerificationCompleted    EventType = "verification.completed"

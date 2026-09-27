@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/wardstone-project/wardstone/internal/api"
+	"github.com/wardstone-project/wardstone/internal/approvals"
 	"github.com/wardstone-project/wardstone/internal/capabilities"
 	"github.com/wardstone-project/wardstone/internal/config"
 	"github.com/wardstone-project/wardstone/internal/connectors"
@@ -84,7 +85,12 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	apiServer, err := api.NewServer(service, store, settings.JiraWebhookSecret, settings.OperatorToken)
+	approvalService, err := approvals.NewService(store, settings.ApprovalLifetime)
+	if err != nil {
+		return err
+	}
+	apiServer, err := api.NewServer(service, store, settings.JiraWebhookSecret, settings.OperatorToken,
+		api.WithAdmin(store, approvalService, settings.Mode))
 	if err != nil {
 		return err
 	}

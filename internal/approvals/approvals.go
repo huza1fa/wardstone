@@ -8,17 +8,16 @@ import (
 )
 
 var (
-	ErrNotGranted    = errors.New("approval is not granted")
-	ErrExpired       = errors.New("approval has expired")
-	ErrActionChanged = errors.New("approved action has changed")
+	ErrNotGranted = errors.New("approval is not granted")
+	ErrExpired    = errors.New("approval has expired")
 )
 
 func Validate(approval domain.Approval, action domain.ProposedAction, now time.Time) error {
-	if approval.Status != domain.ApprovalGranted {
-		return ErrNotGranted
-	}
 	if !now.Before(approval.ExpiresAt) {
 		return ErrExpired
+	}
+	if approval.Status != domain.ApprovalGranted {
+		return ErrNotGranted
 	}
 	if approval.ActionID != action.ID || approval.ActionDigest != action.Digest || !action.DigestValid() {
 		return ErrActionChanged

@@ -23,6 +23,7 @@ type Config struct {
 	CollectorTimeout  time.Duration
 	ModelTimeout      time.Duration
 	JobLease          time.Duration
+	ApprovalLifetime  time.Duration
 	JiraWebhookSecret string
 	OperatorToken     string
 	GoogleBaseURL     string
@@ -67,6 +68,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if config.JobLease, err = durationValue("WARDSTONE_JOB_LEASE", 2*time.Minute); err != nil {
+		return Config{}, err
+	}
+	if config.ApprovalLifetime, err = durationValue("WARDSTONE_APPROVAL_LIFETIME", 24*time.Hour); err != nil {
 		return Config{}, err
 	}
 	if config.Mode != domain.OperatingModeShadow {
