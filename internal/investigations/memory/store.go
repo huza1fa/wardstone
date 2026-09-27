@@ -19,6 +19,8 @@ type Store struct {
 	dedupe         map[string]domain.InvestigationID
 	investigations map[domain.InvestigationID]domain.Investigation
 	evidence       map[domain.InvestigationID][]domain.Evidence
+	messages       map[domain.InvestigationID][]domain.CaseMessage
+	messageDedupe  map[string]domain.InvestigationID
 	actions        map[domain.InvestigationID][]investigations.ActionEvaluation
 	approvals      map[domain.ApprovalID]domain.Approval
 	activeApproval map[domain.ActionID]domain.ApprovalID
@@ -30,6 +32,8 @@ func NewStore() *Store {
 		tickets: make(map[domain.TicketID]domain.Ticket), dedupe: make(map[string]domain.InvestigationID),
 		investigations: make(map[domain.InvestigationID]domain.Investigation),
 		evidence:       make(map[domain.InvestigationID][]domain.Evidence),
+		messages:       make(map[domain.InvestigationID][]domain.CaseMessage),
+		messageDedupe:  make(map[string]domain.InvestigationID),
 		actions:        make(map[domain.InvestigationID][]investigations.ActionEvaluation),
 		approvals:      make(map[domain.ApprovalID]domain.Approval),
 		activeApproval: make(map[domain.ActionID]domain.ApprovalID),
@@ -71,6 +75,18 @@ func (s *Store) GetTicket(_ context.Context, id domain.InvestigationID) (domain.
 		return domain.Ticket{}, investigations.ErrNotFound
 	}
 	return cloneTicket(s.tickets[inv.TicketID]), nil
+}
+
+func (s *Store) ListMessages(_ context.Context, id domain.InvestigationID) ([]domain.CaseMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.investigations[id]; !ok {
+		return nil, investigations.ErrNotFound
+	}
+	items := s.messages[id]
+	result := make([]domain.CaseMessage, len(items))
+	copy(result, items)
+	return result, nil
 }
 
 func (s *Store) StartInvestigation(_ context.Context, id domain.InvestigationID, at time.Time) error {
@@ -126,7 +142,7 @@ func (s *Store) RecordEvidence(_ context.Context, id domain.InvestigationID, ite
 	return nil
 }
 
-func (s *Store) CompleteInvestigation(_ context.Context, id domain.InvestigationID, diagnosis string, provider domain.ModelProviderName, model string, evaluations []investigations.ActionEvaluation, at time.Time) error {
+func (s *Store) CompleteInvestigation(_ context.Context, id domain.InvestigationID, diagnosis string, provider domain.ModelProviderName, model string, evaluations []investigations.ActionEvaluation, resultMessage *domain.CaseMessage, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.requireRunning(id); err != nil {
@@ -146,10 +162,62 @@ func (s *Store) CompleteInvestigation(_ context.Context, id domain.Investigation
 			"action_id": evaluation.Action.ID, "decision": evaluation.Policy.Decision, "reason": evaluation.Policy.Reason,
 		})
 	}
+	if resultMessage != nil {
+		if resultMessage.ID == "" || resultMessage.ExternalID == "" || resultMessage.Direction != domain.MessageOutbound || resultMessage.Body == "" {
+			return investigations.ErrInvalidTransition
+		}
+		resultMessage.InvestigationID = id
+		s.messages[id] = append(s.messages[id], *resultMessage)
+		s.messageDedupe[string(resultMessage.Source)+"\x00"+resultMessage.ExternalID] = id
+	}
 	item.Status, item.CompletedAt = domain.InvestigationCompleted, &at
 	s.investigations[id] = item
 	s.appendEvent(id, audit.InvestigationCompleted, audit.ActorSystem, "orchestrator", at, map[string]any{"actions_proposed": len(evaluations)})
 	return nil
+}
+
+func (s *Store) WaitForRequester(_ context.Context, id domain.InvestigationID, message domain.CaseMessage, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireRunning(id); err != nil {
+		return err
+	}
+	if message.ID == "" || message.ExternalID == "" || message.Direction != domain.MessageOutbound || message.Body == "" {
+		return investigations.ErrInvalidTransition
+	}
+	message.InvestigationID = id
+	s.messages[id] = append(s.messages[id], message)
+	s.messageDedupe[string(message.Source)+"\x00"+message.ExternalID] = id
+	item := s.investigations[id]
+	item.Status = domain.InvestigationWaiting
+	s.investigations[id] = item
+	s.appendEvent(id, audit.RequesterQuestionAsked, audit.ActorModel, "wardstone", at, map[string]any{"message_id": message.ID})
+	return nil
+}
+
+func (s *Store) ReceiveRequesterReply(_ context.Context, source domain.ConnectorName, ticketExternalID string, message domain.CaseMessage, at time.Time) (domain.InvestigationID, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	messageKey := string(source) + "\x00" + message.ExternalID
+	if existing, ok := s.messageDedupe[messageKey]; ok {
+		return existing, false, nil
+	}
+	id, ok := s.dedupe[string(source)+"\x00"+ticketExternalID]
+	if !ok {
+		return "", false, investigations.ErrNotFound
+	}
+	item := s.investigations[id]
+	if item.Status != domain.InvestigationWaiting {
+		return "", false, investigations.ErrNotAwaitingReply
+	}
+	message.InvestigationID = id
+	s.messages[id] = append(s.messages[id], message)
+	s.messageDedupe[messageKey] = id
+	item.Status = domain.InvestigationPending
+	s.investigations[id] = item
+	s.appendEvent(id, audit.RequesterReplyReceived, audit.ActorConnector, string(source), at, map[string]any{"message_id": message.ID})
+	s.appendEvent(id, audit.InvestigationResumed, audit.ActorSystem, "orchestrator", at, map[string]any{"message_id": message.ID})
+	return id, true, nil
 }
 
 func (s *Store) FailInvestigation(_ context.Context, id domain.InvestigationID, failure string, at time.Time) error {

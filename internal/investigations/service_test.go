@@ -202,6 +202,130 @@ func TestCompletedInvestigationIsIdempotentOnReclaimedJob(t *testing.T) {
 	}
 }
 
+func TestRequesterReplyResumesAWaitingInvestigationWithConversationContext(t *testing.T) {
+	t.Parallel()
+	store := memory.NewStore()
+	var calls atomic.Int32
+	model := modelFunc(func(_ context.Context, request agent.Request) (agent.Result, error) {
+		if calls.Add(1) == 1 {
+			return agent.Result{FollowUpQuestion: "Which application and error message do you see?"}, nil
+		}
+		if len(request.Conversation) != 2 || request.Conversation[1].Body != "VPN gives error 691" {
+			t.Fatalf("resumed model conversation = %+v", request.Conversation)
+		}
+		return agent.Result{Diagnosis: "The VPN credentials need to be checked."}, nil
+	})
+	service := newService(t, store, nil, model, registryForTest(t), 1)
+	id, _, err := service.Receive(context.Background(), ticket("JIRA-CONVERSATION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Run(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.GetInvestigation(context.Background(), id)
+	if err != nil || item.Status != domain.InvestigationWaiting {
+		t.Fatalf("waiting investigation = %+v, err=%v", item, err)
+	}
+	messages, err := store.ListMessages(context.Background(), id)
+	if err != nil || len(messages) != 1 || messages[0].Direction != domain.MessageOutbound {
+		t.Fatalf("question messages = %+v, err=%v", messages, err)
+	}
+	reply := domain.CaseMessage{ID: domain.NewMessageID(), Source: "jira", ExternalID: "comment-1", Direction: domain.MessageInbound, Author: "jane@example.com", Body: "VPN gives error 691", CreatedAt: time.Now().UTC()}
+	resumedID, created, err := service.ReceiveRequesterReply(context.Background(), "jira", "JIRA-CONVERSATION", reply)
+	if err != nil || !created || resumedID != id {
+		t.Fatalf("receive reply: id=%s created=%v err=%v", resumedID, created, err)
+	}
+	if _, created, err := service.ReceiveRequesterReply(context.Background(), "jira", "JIRA-CONVERSATION", reply); err != nil || created {
+		t.Fatalf("duplicate reply: created=%v err=%v", created, err)
+	}
+	if err := service.Run(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	item, err = store.GetInvestigation(context.Background(), id)
+	if err != nil || item.Status != domain.InvestigationCompleted || calls.Load() != 2 {
+		t.Fatalf("resumed investigation = %+v calls=%d err=%v", item, calls.Load(), err)
+	}
+	timeline, err := store.Timeline(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wanted := range []audit.EventType{audit.RequesterQuestionAsked, audit.RequesterReplyReceived, audit.InvestigationResumed, audit.InvestigationCompleted} {
+		found := false
+		for _, event := range timeline {
+			found = found || event.Type == wanted
+		}
+		if !found {
+			t.Fatalf("timeline missing %s: %+v", wanted, timeline)
+		}
+	}
+}
+
+func TestConcurrentDuplicateRequesterRepliesResumeOnce(t *testing.T) {
+	t.Parallel()
+	store := memory.NewStore()
+	service := newService(t, store, nil, modelFunc(func(context.Context, agent.Request) (agent.Result, error) {
+		return agent.Result{FollowUpQuestion: "What is the asset tag?"}, nil
+	}), registryForTest(t), 1)
+	id, _, err := service.Receive(context.Background(), ticket("JIRA-REPLY-DUP"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Run(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	const deliveries = 32
+	var group sync.WaitGroup
+	var created atomic.Int32
+	errs := make(chan error, deliveries)
+	group.Add(deliveries)
+	for i := 0; i < deliveries; i++ {
+		go func() {
+			defer group.Done()
+			_, wasCreated, err := service.ReceiveRequesterReply(context.Background(), "jira", "JIRA-REPLY-DUP", domain.CaseMessage{
+				ID: domain.NewMessageID(), Source: "jira", ExternalID: "comment-duplicate", Direction: domain.MessageInbound, Body: "LT-1042", CreatedAt: time.Now().UTC(),
+			})
+			if wasCreated {
+				created.Add(1)
+			}
+			errs <- err
+		}()
+	}
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if created.Load() != 1 {
+		t.Fatalf("created count = %d, want 1", created.Load())
+	}
+	messages, err := store.ListMessages(context.Background(), id)
+	if err != nil || len(messages) != 2 {
+		t.Fatalf("messages = %+v, err=%v", messages, err)
+	}
+}
+
+func TestQuestionCannotSmuggleDiagnosisOrAction(t *testing.T) {
+	t.Parallel()
+	store := memory.NewStore()
+	service := newService(t, store, nil, modelFunc(func(context.Context, agent.Request) (agent.Result, error) {
+		return agent.Result{Diagnosis: "Do this", FollowUpQuestion: "What is the asset tag?"}, nil
+	}), registryForTest(t), 1)
+	id, _, err := service.Receive(context.Background(), ticket("JIRA-AMBIGUOUS-MODEL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Run(context.Background(), id); err == nil {
+		t.Fatal("expected mixed question and diagnosis to be rejected")
+	}
+	item, err := store.GetInvestigation(context.Background(), id)
+	if err != nil || item.Status != domain.InvestigationFailed {
+		t.Fatalf("investigation = %+v, err=%v", item, err)
+	}
+}
+
 func TestActionWithoutEvidenceIsRejected(t *testing.T) {
 	t.Parallel()
 	store := memory.NewStore()

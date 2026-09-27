@@ -35,9 +35,26 @@ type InvestigationStatus string
 const (
 	InvestigationPending   InvestigationStatus = "PENDING"
 	InvestigationRunning   InvestigationStatus = "RUNNING"
+	InvestigationWaiting   InvestigationStatus = "WAITING_ON_REQUESTER"
 	InvestigationCompleted InvestigationStatus = "COMPLETED"
 	InvestigationFailed    InvestigationStatus = "FAILED"
 	InvestigationCancelled InvestigationStatus = "CANCELLED"
+)
+
+type MessageDirection string
+
+const (
+	MessageOutbound MessageDirection = "OUTBOUND"
+	MessageInbound  MessageDirection = "INBOUND"
+)
+
+type DeliveryStatus string
+
+const (
+	DeliveryPending DeliveryStatus = "PENDING"
+	DeliveryRunning DeliveryStatus = "RUNNING"
+	DeliverySent    DeliveryStatus = "SENT"
+	DeliveryDead    DeliveryStatus = "DEAD"
 )
 
 type PolicyDecision string
@@ -95,6 +112,33 @@ type Investigation struct {
 	CreatedAt     time.Time           `json:"created_at"`
 	StartedAt     *time.Time          `json:"started_at,omitempty"`
 	CompletedAt   *time.Time          `json:"completed_at,omitempty"`
+}
+
+// CaseMessage is durable conversation context. ExternalID is the connector's
+// stable message/comment ID and is used to make webhook delivery idempotent.
+type CaseMessage struct {
+	ID              MessageID        `json:"id"`
+	InvestigationID InvestigationID  `json:"investigation_id"`
+	Source          ConnectorName    `json:"source"`
+	ExternalID      string           `json:"external_id"`
+	Direction       MessageDirection `json:"direction"`
+	Author          string           `json:"author,omitempty"`
+	Body            string           `json:"body"`
+	CreatedAt       time.Time        `json:"created_at"`
+}
+
+type MessageDelivery struct {
+	ID             DeliveryID     `json:"id"`
+	MessageID      MessageID      `json:"message_id"`
+	Status         DeliveryStatus `json:"status"`
+	Attempt        int            `json:"attempt"`
+	RemoteID       string         `json:"remote_id,omitempty"`
+	LastError      string         `json:"last_error,omitempty"`
+	AvailableAt    time.Time      `json:"available_at"`
+	LeaseOwner     string         `json:"lease_owner,omitempty"`
+	LeaseExpiresAt *time.Time     `json:"lease_expires_at,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	DeliveredAt    *time.Time     `json:"delivered_at,omitempty"`
 }
 
 type Evidence struct {

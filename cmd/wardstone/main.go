@@ -19,7 +19,9 @@ import (
 	"github.com/wardstone-project/wardstone/internal/config"
 	"github.com/wardstone-project/wardstone/internal/connectors"
 	"github.com/wardstone-project/wardstone/internal/connectors/google"
+	"github.com/wardstone-project/wardstone/internal/connectors/jira"
 	"github.com/wardstone-project/wardstone/internal/database"
+	"github.com/wardstone-project/wardstone/internal/delivery"
 	"github.com/wardstone-project/wardstone/internal/investigations"
 	"github.com/wardstone-project/wardstone/internal/models"
 	"github.com/wardstone-project/wardstone/internal/policy"
@@ -68,6 +70,16 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	jiraClient, err := jira.NewClient(settings.JiraBaseURL, settings.JiraEmail, settings.JiraAPIToken, httpClient)
+	if err != nil {
+		return err
+	}
+	deliveryDispatcher, err := delivery.NewDispatcher(store, jiraClient, logger, delivery.Config{
+		Lease: settings.JobLease, PollInterval: 500 * time.Millisecond, MaxAttempts: 5,
+	})
+	if err != nil {
+		return err
+	}
 	collectors := []connectors.EvidenceCollector{
 		google.UserCollector{Client: googleClient},
 		google.GroupCollector{Client: googleClient},
@@ -90,7 +102,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	apiServer, err := api.NewServer(service, store, settings.JiraWebhookSecret, settings.OperatorToken,
-		api.WithAdmin(store, approvalService, settings.Mode))
+		api.WithAdmin(store, approvalService, settings.Mode), api.WithConversations(service))
 	if err != nil {
 		return err
 	}
@@ -111,6 +123,13 @@ func run(logger *slog.Logger) error {
 	})
 	group.Go(func() error {
 		err := workerPool.Run(ctx)
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	})
+	group.Go(func() error {
+		err := deliveryDispatcher.Run(ctx)
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}

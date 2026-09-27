@@ -14,6 +14,8 @@ type ApprovalID string
 type ExecutionID string
 type VerificationID string
 type JobID string
+type MessageID string
+type DeliveryID string
 type ConnectorName string
 type CapabilityName string
 type ModelProviderName string
@@ -26,6 +28,8 @@ func NewApprovalID() ApprovalID           { return ApprovalID(newID("apr")) }
 func NewExecutionID() ExecutionID         { return ExecutionID(newID("exe")) }
 func NewVerificationID() VerificationID   { return VerificationID(newID("ver")) }
 func NewJobID() JobID                     { return JobID(newID("job")) }
+func NewMessageID() MessageID             { return MessageID(newID("msg")) }
+func NewDeliveryID() DeliveryID           { return DeliveryID(newID("dly")) }
 
 func newID(prefix string) string {
 	var data [16]byte

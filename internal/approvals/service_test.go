@@ -306,7 +306,7 @@ func approvalFixture(t *testing.T, policyDecision domain.PolicyDecision) (*appro
 	evaluation := investigations.ActionEvaluation{
 		Action: action, Policy: domain.PolicyResult{Decision: policyDecision, Reason: "test"},
 	}
-	if err := store.CompleteInvestigation(ctx, investigation.ID, "Test diagnosis", "fake", "fake-v1", []investigations.ActionEvaluation{evaluation}, now); err != nil {
+	if err := store.CompleteInvestigation(ctx, investigation.ID, "Test diagnosis", "fake", "fake-v1", []investigations.ActionEvaluation{evaluation}, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	service, err := approvals.NewService(store, time.Hour)

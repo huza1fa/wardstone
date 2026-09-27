@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -14,7 +15,13 @@ import (
 	"github.com/wardstone-project/wardstone/internal/domain"
 )
 
-const maxProposedActions = 20
+const (
+	maxProposedActions      = 20
+	maxFollowUpQuestionSize = 4000
+	maxRequesterReplySize   = 16000
+	maxDiagnosisSize        = 12000
+	maxActionReasonSize     = 2000
+)
 
 type PolicyEvaluator interface {
 	Evaluate(context.Context, domain.ProposedAction) domain.PolicyResult
@@ -86,6 +93,27 @@ func (s *Service) Receive(ctx context.Context, ticket domain.Ticket) (domain.Inv
 	return s.store.ReceiveTicket(ctx, ticket, investigation)
 }
 
+// ReceiveRequesterReply records one connector-delivered reply and schedules a
+// new investigation run when it answers an outstanding question. The store
+// makes the connector message ID idempotent, so webhook retries are safe.
+func (s *Service) ReceiveRequesterReply(ctx context.Context, ticketSource domain.ConnectorName, ticketExternalID string, message domain.CaseMessage) (domain.InvestigationID, bool, error) {
+	if ticketSource == "" || ticketExternalID == "" || message.ID == "" || message.ExternalID == "" ||
+		message.Direction != domain.MessageInbound || len(message.Body) == 0 || len(message.Body) > maxRequesterReplySize {
+		return "", false, errors.New("valid requester reply source, ticket ID, message ID, and body are required")
+	}
+	if message.Source != ticketSource {
+		return "", false, errors.New("requester reply source must match ticket source")
+	}
+	if message.CreatedAt.IsZero() {
+		message.CreatedAt = s.clock.Now()
+	}
+	return s.store.ReceiveRequesterReply(ctx, ticketSource, ticketExternalID, message, s.clock.Now())
+}
+
+func (s *Service) ListMessages(ctx context.Context, id domain.InvestigationID) ([]domain.CaseMessage, error) {
+	return s.store.ListMessages(ctx, id)
+}
+
 func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr error) {
 	existing, err := s.store.GetInvestigation(ctx, id)
 	if err != nil {
@@ -94,9 +122,16 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 	if existing.Status == domain.InvestigationCompleted {
 		return nil
 	}
+	if existing.Status == domain.InvestigationWaiting {
+		return nil
+	}
 	ticket, err := s.store.GetTicket(ctx, id)
 	if err != nil {
 		return fmt.Errorf("load ticket: %w", err)
+	}
+	messages, err := s.store.ListMessages(ctx, id)
+	if err != nil {
+		return fmt.Errorf("load conversation: %w", err)
 	}
 	if err := s.store.StartInvestigation(ctx, id, s.clock.Now()); err != nil {
 		return fmt.Errorf("start investigation: %w", err)
@@ -187,14 +222,35 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 
 	modelCtx, cancel := context.WithTimeout(ctx, s.config.ModelTimeout)
 	result, err := s.model.Diagnose(modelCtx, agent.Request{
-		InvestigationID: id, Ticket: ticket, Evidence: evidence, Warnings: warnings,
+		InvestigationID: id, Ticket: ticket, Evidence: evidence, Conversation: messages, Warnings: warnings,
 	})
 	cancel()
 	if err != nil {
 		return fmt.Errorf("generate diagnosis: %w", err)
 	}
+	if len(result.FollowUpQuestion) > maxFollowUpQuestionSize {
+		return fmt.Errorf("model follow-up question exceeds %d bytes", maxFollowUpQuestionSize)
+	}
+	if result.FollowUpQuestion != "" {
+		if result.Diagnosis != "" || len(result.Actions) != 0 {
+			return errors.New("model follow-up question cannot include a diagnosis or actions")
+		}
+		messageID := domain.NewMessageID()
+		message := domain.CaseMessage{
+			ID: messageID, InvestigationID: id, Source: ticket.Source,
+			ExternalID: "wardstone:" + string(messageID), Direction: domain.MessageOutbound,
+			Author: "wardstone", Body: result.FollowUpQuestion, CreatedAt: s.clock.Now(),
+		}
+		if err := s.store.WaitForRequester(ctx, id, message, s.clock.Now()); err != nil {
+			return fmt.Errorf("wait for requester: %w", err)
+		}
+		return nil
+	}
 	if result.Diagnosis == "" {
 		return errors.New("model returned an empty diagnosis")
+	}
+	if len(result.Diagnosis) > maxDiagnosisSize {
+		return fmt.Errorf("model diagnosis exceeds %d bytes", maxDiagnosisSize)
 	}
 	if len(result.Actions) > maxProposedActions {
 		return fmt.Errorf("model proposed %d actions; limit is %d", len(result.Actions), maxProposedActions)
@@ -206,7 +262,7 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 	}
 	evaluations := make([]ActionEvaluation, 0, len(result.Actions))
 	for _, proposal := range result.Actions {
-		if proposal.Reason == "" || len(proposal.EvidenceIDs) == 0 {
+		if proposal.Reason == "" || len(proposal.Reason) > maxActionReasonSize || len(proposal.EvidenceIDs) == 0 {
 			return errors.New("proposed actions require a reason and at least one evidence ID")
 		}
 		for _, evidenceID := range proposal.EvidenceIDs {
@@ -227,8 +283,29 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 		}
 		evaluations = append(evaluations, ActionEvaluation{Action: action, Policy: s.policy.Evaluate(ctx, action)})
 	}
-	if err := s.store.CompleteInvestigation(ctx, id, result.Diagnosis, s.model.Name(), s.model.Model(), evaluations, s.clock.Now()); err != nil {
+	messageID := domain.NewMessageID()
+	resultMessage := &domain.CaseMessage{
+		ID: messageID, InvestigationID: id, Source: ticket.Source,
+		ExternalID: "wardstone:" + string(messageID), Direction: domain.MessageOutbound,
+		Author: "wardstone", Body: formatResultMessage(result.Diagnosis, evaluations), CreatedAt: s.clock.Now(),
+	}
+	if err := s.store.CompleteInvestigation(ctx, id, result.Diagnosis, s.model.Name(), s.model.Model(), evaluations, resultMessage, s.clock.Now()); err != nil {
 		return fmt.Errorf("complete investigation: %w", err)
 	}
 	return nil
+}
+
+func formatResultMessage(diagnosis string, evaluations []ActionEvaluation) string {
+	var body strings.Builder
+	body.WriteString("Wardstone investigation complete.\n\nDiagnosis:\n")
+	body.WriteString(diagnosis)
+	if len(evaluations) == 0 {
+		body.WriteString("\n\nNo action is proposed.")
+		return body.String()
+	}
+	body.WriteString("\n\nProposed actions:\n")
+	for _, evaluation := range evaluations {
+		fmt.Fprintf(&body, "- %s (%s): %s\n", evaluation.Action.Capability, evaluation.Policy.Decision, evaluation.Action.Reason)
+	}
+	return body.String()
 }

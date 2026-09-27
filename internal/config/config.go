@@ -25,6 +25,9 @@ type Config struct {
 	JobLease          time.Duration
 	ApprovalLifetime  time.Duration
 	JiraWebhookSecret string
+	JiraBaseURL       string
+	JiraEmail         string
+	JiraAPIToken      string
 	OperatorToken     string
 	GoogleBaseURL     string
 	GoogleAccessToken string
@@ -44,6 +47,9 @@ func Load() (Config, error) {
 		ListenAddress:     valueOrDefault("WARDSTONE_LISTEN_ADDRESS", "127.0.0.1:8080"),
 		Mode:              domain.OperatingMode(valueOrDefault("WARDSTONE_MODE", string(domain.OperatingModeShadow))),
 		JiraWebhookSecret: os.Getenv("WARDSTONE_JIRA_WEBHOOK_SECRET"),
+		JiraBaseURL:       os.Getenv("WARDSTONE_JIRA_BASE_URL"),
+		JiraEmail:         os.Getenv("WARDSTONE_JIRA_EMAIL"),
+		JiraAPIToken:      os.Getenv("WARDSTONE_JIRA_API_TOKEN"),
 		OperatorToken:     os.Getenv("WARDSTONE_OPERATOR_TOKEN"),
 		GoogleBaseURL:     valueOrDefault("WARDSTONE_GOOGLE_BASE_URL", "https://admin.googleapis.com/admin/directory/v1"),
 		GoogleAccessToken: os.Getenv("WARDSTONE_GOOGLE_ACCESS_TOKEN"),
@@ -76,8 +82,8 @@ func Load() (Config, error) {
 	if config.Mode != domain.OperatingModeShadow {
 		return Config{}, fmt.Errorf("only SHADOW mode is implemented; got %s", config.Mode)
 	}
-	if config.DatabaseURL == "" || config.JiraWebhookSecret == "" || config.OperatorToken == "" || config.GoogleAccessToken == "" || config.OpenAIModel == "" {
-		return Config{}, errors.New("WARDSTONE_DATABASE_URL, WARDSTONE_JIRA_WEBHOOK_SECRET, WARDSTONE_OPERATOR_TOKEN, WARDSTONE_GOOGLE_ACCESS_TOKEN, and WARDSTONE_OPENAI_MODEL are required")
+	if config.DatabaseURL == "" || config.JiraWebhookSecret == "" || config.JiraBaseURL == "" || config.JiraEmail == "" || config.JiraAPIToken == "" || config.OperatorToken == "" || config.GoogleAccessToken == "" || config.OpenAIModel == "" {
+		return Config{}, errors.New("WARDSTONE_DATABASE_URL, WARDSTONE_JIRA_WEBHOOK_SECRET, WARDSTONE_JIRA_BASE_URL, WARDSTONE_JIRA_EMAIL, WARDSTONE_JIRA_API_TOKEN, WARDSTONE_OPERATOR_TOKEN, WARDSTONE_GOOGLE_ACCESS_TOKEN, and WARDSTONE_OPENAI_MODEL are required")
 	}
 	if config.Workers < 1 || config.MaxCollectors < 1 {
 		return Config{}, errors.New("worker and collector limits must be positive")

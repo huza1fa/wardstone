@@ -17,7 +17,7 @@ explicitly, for example:
 
 ```sh
 docker compose exec -T postgres psql -U wardstone_admin -d wardstone \
-  < migrations/000002_approval_invariants.sql
+  < migrations/000004_jira_delivery_outbox.sql
 ```
 
 Never reapply a migration whose version already appears in
@@ -49,6 +49,58 @@ diagnoses and timelines, and pending approval requests. Browser and terminal
 approval decisions both use the same authenticated API and approval service.
 Wardstone is still restricted to SHADOW mode, so the approval queue normally
 remains empty in the current milestone.
+
+## Jira connector configuration
+
+Create a dedicated Jira Cloud service account with only **Browse projects** and
+**Add comments** for the development project. Create an Atlassian API token for
+that account and configure the ignored local environment file:
+
+```sh
+WARDSTONE_JIRA_BASE_URL=https://your-site.atlassian.net
+WARDSTONE_JIRA_EMAIL=wardstone-bot@example.com
+WARDSTONE_JIRA_API_TOKEN=replace-me
+WARDSTONE_JIRA_WEBHOOK_SECRET=replace-with-a-separate-random-secret
+```
+
+The service uses Jira's REST v3 comment endpoint. It requires HTTPS in normal
+operation; `http://localhost` and loopback IPs are accepted only for test mocks.
+Do not reuse the outbound Jira API token as the inbound webhook secret.
+
+The outgoing connector is an at-least-once delivery system: Wardstone commits
+the question/result and a pending delivery before calling Jira. Retryable
+network, 429, and 5xx failures back off up to five attempts. Jira does not offer
+an idempotency key for comment creation, so an ambiguous network failure after
+Jira accepts a request can produce a duplicate visible comment; the durable
+audit timeline records every confirmed remote comment ID.
+
+## Requester replies
+
+When an investigation needs one missing fact, the model stores a durable
+outbound question and the investigation moves to `WAITING_ON_REQUESTER`. The
+current Jira Automation-friendly reply endpoint is:
+
+```text
+POST /v1/tickets/jira/replies
+Authorization: Bearer $WARDSTONE_JIRA_WEBHOOK_SECRET
+Content-Type: application/json
+
+{"external_id":"HELP-42","comment_id":"jira-comment-id","author":"requester@example.com","body":"The asset tag is LT-1042"}
+```
+
+`comment_id` must be stable: repeating the same reply is safe and returns the
+existing investigation without creating another resume job. Operators can read
+the immutable conversation through
+`GET /v1/investigations/{id}/messages` with `WARDSTONE_OPERATOR_TOKEN`.
+
+For Jira Automation, map the issue key to `external_id`, the comment's stable
+ID to `comment_id`, the author identity to `author`, and the comment text to
+`body`. The Automation web request must include:
+
+```text
+Authorization: Bearer $WARDSTONE_JIRA_WEBHOOK_SECRET
+Content-Type: application/json
+```
 
 ## Terminal console
 

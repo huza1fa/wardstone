@@ -27,15 +27,31 @@ type InvestigationReader interface {
 	Timeline(context.Context, domain.InvestigationID) ([]audit.Event, error)
 }
 
+type ConversationService interface {
+	ReceiveRequesterReply(context.Context, domain.ConnectorName, string, domain.CaseMessage) (domain.InvestigationID, bool, error)
+	ListMessages(context.Context, domain.InvestigationID) ([]domain.CaseMessage, error)
+}
+
 type Server struct {
 	service       InvestigationService
 	reader        InvestigationReader
 	adminReader   AdminReader
 	approvals     ApprovalService
+	conversations ConversationService
 	mode          domain.OperatingMode
 	webhookSecret string
 	operatorToken string
 	now           func() time.Time
+}
+
+func WithConversations(service ConversationService) Option {
+	return func(server *Server) error {
+		if service == nil {
+			return errors.New("conversation service is required")
+		}
+		server.conversations = service
+		return nil
+	}
 }
 
 type Option func(*Server) error
@@ -75,7 +91,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("POST /v1/tickets/jira", s.receiveJira)
+	mux.HandleFunc("POST /v1/tickets/jira/replies", s.receiveJiraReply)
 	mux.HandleFunc("GET /v1/investigations/{id}", s.getInvestigation)
+	mux.HandleFunc("GET /v1/investigations/{id}/messages", s.getMessages)
 	mux.HandleFunc("GET /v1/investigations/{id}/timeline", s.getTimeline)
 	mux.HandleFunc("GET /v1/admin/overview", s.getAdminOverview)
 	mux.HandleFunc("GET /v1/admin/investigations", s.listAdminInvestigations)
@@ -83,6 +101,52 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/admin/approvals/{id}/decision", s.decideAdminApproval)
 	s.registerWeb(mux)
 	return mux
+}
+
+func (s *Server) receiveJiraReply(writer http.ResponseWriter, request *http.Request) {
+	if !s.authorized(request) {
+		writeError(writer, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if s.conversations == nil {
+		writeError(writer, http.StatusServiceUnavailable, "requester conversations are not configured")
+		return
+	}
+	defer request.Body.Close()
+	var payload jira.ReplyPayload
+	decoder := json.NewDecoder(io.LimitReader(request.Body, maxRequestBody+1))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid JSON payload")
+		return
+	}
+	if err := requireEOF(decoder); err != nil {
+		writeError(writer, http.StatusBadRequest, "payload must contain one JSON object")
+		return
+	}
+	ticketExternalID, message, err := jira.NormalizeReply(payload, s.now())
+	if err != nil || len(message.Body) > 16000 {
+		writeError(writer, http.StatusBadRequest, "external_id, comment_id, and a reply of at most 16000 bytes are required")
+		return
+	}
+	id, created, err := s.conversations.ReceiveRequesterReply(request.Context(), jira.Name, ticketExternalID, message)
+	if errors.Is(err, investigations.ErrNotFound) {
+		writeError(writer, http.StatusNotFound, "investigation not found")
+		return
+	}
+	if errors.Is(err, investigations.ErrNotAwaitingReply) {
+		writeError(writer, http.StatusConflict, "investigation is not awaiting a requester reply")
+		return
+	}
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "could not receive requester reply")
+		return
+	}
+	status := http.StatusAccepted
+	if !created {
+		status = http.StatusOK
+	}
+	writeJSON(writer, status, map[string]any{"investigation_id": id, "created": created})
 }
 
 func (s *Server) health(writer http.ResponseWriter, _ *http.Request) {
@@ -155,6 +219,27 @@ func (s *Server) getTimeline(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"events": events})
+}
+
+func (s *Server) getMessages(writer http.ResponseWriter, request *http.Request) {
+	if !authorized(request, s.operatorToken) {
+		writeError(writer, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if s.conversations == nil {
+		writeError(writer, http.StatusServiceUnavailable, "requester conversations are not configured")
+		return
+	}
+	messages, err := s.conversations.ListMessages(request.Context(), domain.InvestigationID(request.PathValue("id")))
+	if errors.Is(err, investigations.ErrNotFound) {
+		writeError(writer, http.StatusNotFound, "investigation not found")
+		return
+	}
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "could not load conversation")
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"messages": messages})
 }
 
 func (s *Server) authorized(request *http.Request) bool {

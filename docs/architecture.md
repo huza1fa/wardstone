@@ -62,6 +62,9 @@ typed constants.
   external ID and source.
 - `Investigation`: one replayable attempt to investigate a ticket, with status,
   prompt/model identity, timestamps, and failure information.
+- `CaseMessage`: immutable inbound or outbound requester context. A question
+  moves an investigation to `WAITING_ON_REQUESTER`; a deduplicated reply moves
+  it back to `PENDING` and creates a new durable job.
 - `Evidence`: a structured observation with source, kind, human summary,
   machine-readable data, and observation time.
 - `Connector`: an adapter that registers capability metadata and implements
@@ -127,6 +130,8 @@ PostgreSQL stores:
 - `audit_events`, unique on `(investigation_id, sequence)` and append-only by
   application role permissions.
 - `jobs`, with available time, lease owner/expiry, attempt count, and dedupe key.
+- `case_messages`, an append-only conversation ledger keyed by connector and
+  external message ID.
 
 Foreign keys preserve the aggregate. JSONB is used for vendor-shaped evidence,
 action arguments, and event details; frequently queried lifecycle fields remain
@@ -154,6 +159,23 @@ Future approval/execution stages add `approval.requested`,
 `approval.granted|denied|expired`, `action.executed|failed`,
 `verification.completed`, and `ticket.updated` without changing the
 investigation contract.
+
+### Requester conversation lifecycle
+
+The model may return one concise `follow_up_question` instead of a diagnosis
+when a requester can supply the missing fact. In one transaction Wardstone
+stores the outbound message, moves the investigation from `RUNNING` to
+`WAITING_ON_REQUESTER`, and appends `requester.question_asked`. A connector
+delivers a later reply with a stable comment ID. In one transaction Wardstone
+deduplicates that ID, stores the inbound message, moves the investigation to
+`PENDING`, appends `requester.reply_received` and `investigation.resumed`, and
+enqueues a distinct resume job. The next run receives the complete conversation
+ledger as untrusted model context.
+
+This slice deliberately stops at durable intake and resume. Sending an outbound
+question through Jira/Slack will use a transactional outbox and a connector
+delivery adapter, rather than making an external HTTP call inside the state
+transition.
 
 Events are facts, not commands. Persisting an event does not implicitly publish
 it to a process-local channel. A transactional outbox can be added when an
@@ -255,6 +277,8 @@ explicit, not active.
 | Boundary | Behavior |
 | --- | --- |
 | Jira duplicate delivery | Unique source/external ID and dedupe job key return the existing ticket/investigation |
+| Jira duplicate reply | Unique connector/comment ID returns the existing case without a second resume job |
+| Reply races with a duplicate webhook | The ticket investigation row is locked; exactly one transaction records the reply and enqueues resume |
 | HTTP client disconnect | Does not cancel accepted durable work; only request parsing/response work uses that context |
 | Worker shutdown | Cancels owned investigations, releases/lets leases expire, and leaves retryable durable jobs |
 | Connector timeout/throttle | Per-call timeout; bounded exponential backoff only for safe reads and explicit retryable responses |

@@ -11,6 +11,7 @@ type Request struct {
 	InvestigationID domain.InvestigationID
 	Ticket          domain.Ticket
 	Evidence        []domain.Evidence
+	Conversation    []domain.CaseMessage
 	Warnings        []string
 }
 
@@ -22,8 +23,9 @@ type ProposedAction struct {
 }
 
 type Result struct {
-	Diagnosis string           `json:"diagnosis"`
-	Actions   []ProposedAction `json:"actions"`
+	Diagnosis        string           `json:"diagnosis"`
+	FollowUpQuestion string           `json:"follow_up_question"`
+	Actions          []ProposedAction `json:"actions"`
 }
 
 type ModelProvider interface {

@@ -91,6 +91,33 @@ func (s *Store) GetTicket(ctx context.Context, id domain.InvestigationID) (domai
 	return ticket, err
 }
 
+func (s *Store) ListMessages(ctx context.Context, id domain.InvestigationID) ([]domain.CaseMessage, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, investigation_id, source, external_id, direction, author, body, created_at
+		FROM case_messages WHERE investigation_id = $1 ORDER BY created_at, id`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var messages []domain.CaseMessage
+	for rows.Next() {
+		var message domain.CaseMessage
+		if err := rows.Scan(&message.ID, &message.InvestigationID, &message.Source, &message.ExternalID,
+			&message.Direction, &message.Author, &message.Body, &message.CreatedAt); err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if messages == nil {
+		if _, err := s.GetInvestigation(ctx, id); err != nil {
+			return nil, err
+		}
+	}
+	return messages, nil
+}
+
 func (s *Store) StartInvestigation(ctx context.Context, id domain.InvestigationID, at time.Time) error {
 	return s.transaction(ctx, func(tx pgx.Tx) error {
 		if err := requireLease(ctx, tx, id); err != nil {
@@ -165,7 +192,7 @@ func (s *Store) RecordEvidence(ctx context.Context, id domain.InvestigationID, i
 	})
 }
 
-func (s *Store) CompleteInvestigation(ctx context.Context, id domain.InvestigationID, diagnosis string, provider domain.ModelProviderName, model string, evaluations []investigations.ActionEvaluation, at time.Time) error {
+func (s *Store) CompleteInvestigation(ctx context.Context, id domain.InvestigationID, diagnosis string, provider domain.ModelProviderName, model string, evaluations []investigations.ActionEvaluation, resultMessage *domain.CaseMessage, at time.Time) error {
 	return s.transaction(ctx, func(tx pgx.Tx) error {
 		if err := requireLease(ctx, tx, id); err != nil {
 			return err
@@ -208,8 +235,119 @@ func (s *Store) CompleteInvestigation(ctx context.Context, id domain.Investigati
 				return err
 			}
 		}
+		if resultMessage != nil {
+			if err := insertOutboundMessage(ctx, tx, id, *resultMessage, at); err != nil {
+				return err
+			}
+		}
 		return appendEvent(ctx, tx, id, audit.InvestigationCompleted, audit.ActorSystem, "orchestrator", at, map[string]any{"actions_proposed": len(evaluations)})
 	})
+}
+
+func (s *Store) WaitForRequester(ctx context.Context, id domain.InvestigationID, message domain.CaseMessage, at time.Time) error {
+	return s.transaction(ctx, func(tx pgx.Tx) error {
+		if err := requireLease(ctx, tx, id); err != nil {
+			return err
+		}
+		if err := requireRunning(ctx, tx, id); err != nil {
+			return err
+		}
+		if err := insertOutboundMessage(ctx, tx, id, message, at); err != nil {
+			return err
+		}
+		command, err := tx.Exec(ctx, `UPDATE investigations SET status = 'WAITING_ON_REQUESTER' WHERE id = $1 AND status = 'RUNNING'`, id)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() != 1 {
+			return investigations.ErrInvalidTransition
+		}
+		return appendEvent(ctx, tx, id, audit.RequesterQuestionAsked, audit.ActorModel, "wardstone", at, map[string]any{"message_id": message.ID})
+	})
+}
+
+func insertOutboundMessage(ctx context.Context, tx pgx.Tx, investigationID domain.InvestigationID, message domain.CaseMessage, at time.Time) error {
+	if message.ID == "" || message.ExternalID == "" || message.Direction != domain.MessageOutbound || message.Body == "" {
+		return investigations.ErrInvalidTransition
+	}
+	message.InvestigationID = investigationID
+	_, err := tx.Exec(ctx, `INSERT INTO case_messages
+		(id, investigation_id, source, external_id, direction, author, body, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		message.ID, message.InvestigationID, message.Source, message.ExternalID, message.Direction,
+		message.Author, message.Body, message.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("insert outbound requester message: %w", err)
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO message_deliveries
+		(id, message_id, status, available_at, created_at)
+		VALUES ($1, $2, 'PENDING', $3, $3)`, domain.NewDeliveryID(), message.ID, at)
+	if err != nil {
+		return fmt.Errorf("enqueue requester message: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ReceiveRequesterReply(ctx context.Context, source domain.ConnectorName, ticketExternalID string, message domain.CaseMessage, at time.Time) (domain.InvestigationID, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var id domain.InvestigationID
+	var status domain.InvestigationStatus
+	err = tx.QueryRow(ctx, `SELECT i.id, i.status FROM investigations i
+		JOIN tickets t ON t.id = i.ticket_id WHERE t.source = $1 AND t.external_id = $2 FOR UPDATE`, source, ticketExternalID).Scan(&id, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, investigations.ErrNotFound
+	}
+	if err != nil {
+		return "", false, err
+	}
+	var existing domain.InvestigationID
+	err = tx.QueryRow(ctx, `SELECT investigation_id FROM case_messages WHERE source = $1 AND external_id = $2`, source, message.ExternalID).Scan(&existing)
+	if err == nil {
+		return existing, false, tx.Commit(ctx)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", false, err
+	}
+	if status != domain.InvestigationWaiting {
+		return "", false, investigations.ErrNotAwaitingReply
+	}
+	message.InvestigationID = id
+	_, err = tx.Exec(ctx, `INSERT INTO case_messages
+		(id, investigation_id, source, external_id, direction, author, body, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		message.ID, message.InvestigationID, message.Source, message.ExternalID, message.Direction,
+		message.Author, message.Body, message.CreatedAt)
+	if err != nil {
+		return "", false, fmt.Errorf("insert requester reply: %w", err)
+	}
+	command, err := tx.Exec(ctx, `UPDATE investigations SET status = 'PENDING' WHERE id = $1 AND status = 'WAITING_ON_REQUESTER'`, id)
+	if err != nil {
+		return "", false, err
+	}
+	if command.RowsAffected() != 1 {
+		return "", false, investigations.ErrInvalidTransition
+	}
+	if err := appendEvent(ctx, tx, id, audit.RequesterReplyReceived, audit.ActorConnector, string(source), at, map[string]any{"message_id": message.ID}); err != nil {
+		return "", false, err
+	}
+	if err := appendEvent(ctx, tx, id, audit.InvestigationResumed, audit.ActorSystem, "orchestrator", at, map[string]any{"message_id": message.ID}); err != nil {
+		return "", false, err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO jobs
+		(id, kind, investigation_id, dedupe_key, status, available_at, created_at)
+		VALUES ($1, 'investigate', $2, $3, 'PENDING', $4, $4)`,
+		domain.NewJobID(), id, "resume:"+string(id)+":"+message.ExternalID, at)
+	if err != nil {
+		return "", false, fmt.Errorf("enqueue resumed investigation: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", false, err
+	}
+	return id, true, nil
 }
 
 func (s *Store) FailInvestigation(ctx context.Context, id domain.InvestigationID, failure string, at time.Time) error {

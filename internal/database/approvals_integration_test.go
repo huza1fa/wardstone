@@ -12,6 +12,7 @@ import (
 	approvalstate "github.com/wardstone-project/wardstone/internal/approvals"
 	"github.com/wardstone-project/wardstone/internal/audit"
 	"github.com/wardstone-project/wardstone/internal/domain"
+	"github.com/wardstone-project/wardstone/internal/investigations"
 )
 
 func TestApprovalLifecyclePostgres(t *testing.T) {
@@ -158,5 +159,100 @@ func TestApprovalLifecyclePostgres(t *testing.T) {
 	}
 	if requested != 1 || decided != 1 {
 		t.Fatalf("unexpected audit counts: requested=%d decided=%d", requested, decided)
+	}
+}
+
+func TestRequesterConversationPostgres(t *testing.T) {
+	databaseURL := os.Getenv("WARDSTONE_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("WARDSTONE_TEST_DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	store := NewStore(pool)
+	now := time.Now().UTC()
+	ticketID, investigationID := domain.NewTicketID(), domain.NewInvestigationID()
+	if _, err := pool.Exec(ctx, `INSERT INTO tickets
+		(id, source, external_id, summary, description, reporter_email, created_at)
+		VALUES ($1, 'jira', $2, 'VPN issue', '', '', $3)`, ticketID, "TEST-"+string(ticketID), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO investigations (id, ticket_id, status, prompt_version, created_at)
+		VALUES ($1, $2, 'PENDING', 'test-v1', $3)`, investigationID, ticketID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StartInvestigation(ctx, investigationID, now); err != nil {
+		t.Fatal(err)
+	}
+	question := domain.CaseMessage{ID: domain.NewMessageID(), Source: "jira", ExternalID: "wardstone-question-" + string(investigationID), Direction: domain.MessageOutbound, Body: "Which VPN error do you see?", CreatedAt: now}
+	if err := store.WaitForRequester(ctx, investigationID, question, now); err != nil {
+		t.Fatal(err)
+	}
+	var deliveryStatus domain.DeliveryStatus
+	if err := pool.QueryRow(ctx, `SELECT status FROM message_deliveries WHERE message_id = $1`, question.ID).Scan(&deliveryStatus); err != nil || deliveryStatus != domain.DeliveryPending {
+		t.Fatalf("question delivery status = %q, err=%v", deliveryStatus, err)
+	}
+
+	const callers = 12
+	type result struct {
+		created bool
+		err     error
+	}
+	results := make(chan result, callers)
+	start := make(chan struct{})
+	var group sync.WaitGroup
+	for range callers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			_, created, err := store.ReceiveRequesterReply(ctx, "jira", "TEST-"+string(ticketID), domain.CaseMessage{
+				ID: domain.NewMessageID(), Source: "jira", ExternalID: "comment-" + string(investigationID), Direction: domain.MessageInbound, Body: "Error 691", CreatedAt: now,
+			}, now)
+			results <- result{created: created, err: err}
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(results)
+	createdCount := 0
+	for result := range results {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.created {
+			createdCount++
+		}
+	}
+	if createdCount != 1 {
+		t.Fatalf("created replies = %d, want 1", createdCount)
+	}
+	item, err := store.GetInvestigation(ctx, investigationID)
+	if err != nil || item.Status != domain.InvestigationPending {
+		t.Fatalf("investigation = %+v, err=%v", item, err)
+	}
+	messages, err := store.ListMessages(ctx, investigationID)
+	if err != nil || len(messages) != 2 {
+		t.Fatalf("messages = %+v, err=%v", messages, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE case_messages SET body = 'tampered' WHERE id = $1`, question.ID); err == nil {
+		t.Fatal("database allowed a case message to change")
+	}
+	job, err := store.Claim(ctx, "conversation-test", time.Minute)
+	if err != nil || job.InvestigationID != investigationID || job.Kind != "investigate" {
+		t.Fatalf("resumed job = %+v, err=%v", job, err)
+	}
+	if err := store.Complete(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ReceiveRequesterReply(ctx, "jira", "TEST-"+string(ticketID), domain.CaseMessage{
+		ID: domain.NewMessageID(), Source: "jira", ExternalID: "new-comment-" + string(investigationID), Direction: domain.MessageInbound, Body: "Another detail", CreatedAt: now,
+	}, now); !errors.Is(err, investigations.ErrNotAwaitingReply) {
+		t.Fatalf("second distinct reply error = %v, want %v", err, investigations.ErrNotAwaitingReply)
 	}
 }
