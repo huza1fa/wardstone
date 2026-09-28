@@ -22,6 +22,7 @@ import (
 	"github.com/wardstone-project/wardstone/internal/connectors/jira"
 	"github.com/wardstone-project/wardstone/internal/database"
 	"github.com/wardstone-project/wardstone/internal/delivery"
+	"github.com/wardstone-project/wardstone/internal/domain"
 	"github.com/wardstone-project/wardstone/internal/investigations"
 	"github.com/wardstone-project/wardstone/internal/models"
 	"github.com/wardstone-project/wardstone/internal/policy"
@@ -90,11 +91,14 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	service, err := investigations.NewService(store, collectors, model, registry, policyEvaluator, investigations.Config{
-		MaxConcurrentCollectors: settings.MaxCollectors,
-		CollectorTimeout:        settings.CollectorTimeout,
-		ModelTimeout:            settings.ModelTimeout,
-		PromptVersion:           "shadow-v1",
-		Specialists:             specialistRegistry,
+		MaxConcurrentCollectors:  settings.MaxCollectors,
+		CollectorTimeout:         settings.CollectorTimeout,
+		ModelTimeout:             settings.ModelTimeout,
+		PromptVersion:            "shadow-v1",
+		MaxHandoffs:              settings.MaxHandoffs,
+		MaxFollowUpQuestions:     settings.MaxFollowUpQuestions,
+		DeliverRequesterMessages: settings.Mode != domain.OperatingModeShadow,
+		Specialists:              specialistRegistry,
 	})
 	if err != nil {
 		return err

@@ -285,7 +285,7 @@ func TestConcurrentDuplicateRequesterRepliesResumeOnce(t *testing.T) {
 		go func() {
 			defer group.Done()
 			_, wasCreated, err := service.ReceiveRequesterReply(context.Background(), "jira", "JIRA-REPLY-DUP", domain.CaseMessage{
-				ID: domain.NewMessageID(), Source: "jira", ExternalID: "comment-duplicate", Direction: domain.MessageInbound, Body: "LT-1042", CreatedAt: time.Now().UTC(),
+				ID: domain.NewMessageID(), Source: "jira", ExternalID: "comment-duplicate", Direction: domain.MessageInbound, Author: "jane@example.com", Body: "LT-1042", CreatedAt: time.Now().UTC(),
 			})
 			if wasCreated {
 				created.Add(1)
@@ -306,6 +306,61 @@ func TestConcurrentDuplicateRequesterRepliesResumeOnce(t *testing.T) {
 	messages, err := store.ListMessages(context.Background(), id)
 	if err != nil || len(messages) != 2 {
 		t.Fatalf("messages = %+v, err=%v", messages, err)
+	}
+}
+
+func TestRequesterReplyRejectsNonRequesterAndBot(t *testing.T) {
+	t.Parallel()
+	store := memory.NewStore()
+	service := newService(t, store, nil, modelFunc(func(context.Context, agent.Request) (agent.Result, error) {
+		return agent.Result{FollowUpQuestion: "What is the asset tag?"}, nil
+	}), registryForTest(t), 1)
+	id, _, err := service.Receive(context.Background(), ticket("JIRA-REPLY-AUTHOR"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Run(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	for _, author := range []string{"wardstone", "other@example.com"} {
+		_, created, err := service.ReceiveRequesterReply(context.Background(), "jira", "JIRA-REPLY-AUTHOR", domain.CaseMessage{
+			ID: domain.NewMessageID(), Source: "jira", ExternalID: "comment-" + author, Direction: domain.MessageInbound,
+			Author: author, Body: "LT-1042", CreatedAt: time.Now().UTC(),
+		})
+		if !errors.Is(err, investigations.ErrUnauthorizedReply) || created {
+			t.Fatalf("author %q: created=%v err=%v", author, created, err)
+		}
+	}
+}
+
+func TestFollowUpQuestionLimitFailsInvestigation(t *testing.T) {
+	t.Parallel()
+	store := memory.NewStore()
+	service := newService(t, store, nil, modelFunc(func(context.Context, agent.Request) (agent.Result, error) {
+		return agent.Result{FollowUpQuestion: "What is the asset tag?"}, nil
+	}), registryForTest(t), 1)
+	id, _, err := service.Receive(context.Background(), ticket("JIRA-QUESTION-LIMIT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := service.Run(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err := service.ReceiveRequesterReply(context.Background(), "jira", "JIRA-QUESTION-LIMIT", domain.CaseMessage{
+			ID: domain.NewMessageID(), Source: "jira", ExternalID: fmt.Sprintf("comment-%d", i), Direction: domain.MessageInbound,
+			Author: "jane@example.com", Body: "LT-1042", CreatedAt: time.Now().UTC(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := service.Run(context.Background(), id); err == nil || !strings.Contains(err.Error(), "follow-up question limit") {
+		t.Fatalf("run error = %v, want follow-up question limit", err)
+	}
+	item, err := store.GetInvestigation(context.Background(), id)
+	if err != nil || item.Status != domain.InvestigationFailed {
+		t.Fatalf("investigation = %+v, err=%v", item, err)
 	}
 }
 

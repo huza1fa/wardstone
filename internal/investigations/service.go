@@ -10,6 +10,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/wardstone-project/wardstone/internal/agent"
+	"github.com/wardstone-project/wardstone/internal/audit"
 	"github.com/wardstone-project/wardstone/internal/capabilities"
 	"github.com/wardstone-project/wardstone/internal/connectors"
 	"github.com/wardstone-project/wardstone/internal/domain"
@@ -22,6 +23,8 @@ const (
 	maxRequesterReplySize   = 16000
 	maxDiagnosisSize        = 12000
 	maxActionReasonSize     = 2000
+	defaultMaxHandoffs      = 3
+	defaultMaxFollowUps     = 3
 )
 
 type PolicyEvaluator interface {
@@ -37,11 +40,14 @@ type realClock struct{}
 func (realClock) Now() time.Time { return time.Now().UTC() }
 
 type Config struct {
-	MaxConcurrentCollectors int
-	CollectorTimeout        time.Duration
-	ModelTimeout            time.Duration
-	PromptVersion           string
-	Specialists             *specialists.Registry
+	MaxConcurrentCollectors  int
+	CollectorTimeout         time.Duration
+	ModelTimeout             time.Duration
+	PromptVersion            string
+	MaxHandoffs              int
+	MaxFollowUpQuestions     int
+	DeliverRequesterMessages bool
+	Specialists              *specialists.Registry
 }
 
 type Service struct {
@@ -68,6 +74,15 @@ func NewService(store Store, collectors []connectors.EvidenceCollector, model ag
 	}
 	if config.PromptVersion == "" {
 		return nil, errors.New("prompt version is required")
+	}
+	if config.MaxHandoffs == 0 {
+		config.MaxHandoffs = defaultMaxHandoffs
+	}
+	if config.MaxFollowUpQuestions == 0 {
+		config.MaxFollowUpQuestions = defaultMaxFollowUps
+	}
+	if config.MaxHandoffs < 1 || config.MaxFollowUpQuestions < 1 {
+		return nil, errors.New("handoff and follow-up question limits must be positive")
 	}
 	dispatcher, err := specialists.NewDispatcher(config.Specialists)
 	if err != nil {
@@ -122,7 +137,7 @@ func (s *Service) Receive(ctx context.Context, ticket domain.Ticket) (domain.Inv
 // new investigation run when it answers an outstanding question. The store
 // makes the connector message ID idempotent, so webhook retries are safe.
 func (s *Service) ReceiveRequesterReply(ctx context.Context, ticketSource domain.ConnectorName, ticketExternalID string, message domain.CaseMessage) (domain.InvestigationID, bool, error) {
-	if ticketSource == "" || ticketExternalID == "" || message.ID == "" || message.ExternalID == "" ||
+	if ticketSource == "" || ticketExternalID == "" || message.ID == "" || message.ExternalID == "" || message.Author == "" ||
 		message.Direction != domain.MessageInbound || len(message.Body) == 0 || len(message.Body) > maxRequesterReplySize {
 		return "", false, errors.New("valid requester reply source, ticket ID, message ID, and body are required")
 	}
@@ -284,6 +299,9 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 		if !s.specialists.AllowsHandoff(profile.Name, result.Handoff.Specialist) {
 			return fmt.Errorf("specialist %q cannot hand off to %q", profile.Name, result.Handoff.Specialist)
 		}
+		if err := s.checkLimit(ctx, id, audit.SpecialistHandedOff, s.config.MaxHandoffs, "handoff"); err != nil {
+			return err
+		}
 		if err := s.store.Handoff(ctx, id, profile.Name, result.Handoff.Specialist, result.Handoff.Reason, s.clock.Now()); err != nil {
 			return fmt.Errorf("handoff investigation: %w", err)
 		}
@@ -293,13 +311,16 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 		if result.Diagnosis != "" || len(result.Actions) != 0 {
 			return errors.New("model follow-up question cannot include a diagnosis or actions")
 		}
+		if err := s.checkLimit(ctx, id, audit.RequesterQuestionAsked, s.config.MaxFollowUpQuestions, "follow-up question"); err != nil {
+			return err
+		}
 		messageID := domain.NewMessageID()
 		message := domain.CaseMessage{
 			ID: messageID, InvestigationID: id, Source: ticket.Source,
 			ExternalID: "wardstone:" + string(messageID), Direction: domain.MessageOutbound,
 			Author: "wardstone", Body: result.FollowUpQuestion, CreatedAt: s.clock.Now(),
 		}
-		if err := s.store.WaitForRequester(ctx, id, message, s.clock.Now()); err != nil {
+		if err := s.store.WaitForRequester(ctx, id, message, s.config.DeliverRequesterMessages, s.clock.Now()); err != nil {
 			return fmt.Errorf("wait for requester: %w", err)
 		}
 		return nil
@@ -350,8 +371,25 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 		ExternalID: "wardstone:" + string(messageID), Direction: domain.MessageOutbound,
 		Author: "wardstone", Body: formatResultMessage(result.Diagnosis, evaluations), CreatedAt: s.clock.Now(),
 	}
-	if err := s.store.CompleteInvestigation(ctx, id, result.Diagnosis, s.model.Name(), s.model.Model(), evaluations, resultMessage, s.clock.Now()); err != nil {
+	if err := s.store.CompleteInvestigation(ctx, id, result.Diagnosis, s.model.Name(), s.model.Model(), evaluations, resultMessage, s.config.DeliverRequesterMessages, s.clock.Now()); err != nil {
 		return fmt.Errorf("complete investigation: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) checkLimit(ctx context.Context, id domain.InvestigationID, eventType audit.EventType, limit int, name string) error {
+	timeline, err := s.store.Timeline(ctx, id)
+	if err != nil {
+		return fmt.Errorf("load %s limit: %w", name, err)
+	}
+	count := 0
+	for _, event := range timeline {
+		if event.Type == eventType {
+			count++
+		}
+	}
+	if count >= limit {
+		return fmt.Errorf("%s limit of %d reached; operator intervention is required", name, limit)
 	}
 	return nil
 }

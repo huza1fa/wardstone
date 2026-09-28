@@ -3,8 +3,8 @@ services:
     image: postgres:17-alpine
     environment:
       POSTGRES_DB: wardstone
-      POSTGRES_USER: wardstone_admin
-      POSTGRES_PASSWORD: wardstone_admin
+      POSTGRES_USER: ${WARDSTONE_POSTGRES_USER:?set WARDSTONE_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${WARDSTONE_POSTGRES_PASSWORD:?set WARDSTONE_POSTGRES_PASSWORD}
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:

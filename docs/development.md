@@ -62,8 +62,8 @@ remains empty in the current milestone.
 
 ## Jira connector configuration
 
-Create a dedicated Jira Cloud service account with only **Browse projects** and
-**Add comments** for the development project. Create an Atlassian API token for
+Create a dedicated Jira Cloud service account with only **Browse projects** for
+the development project. Create an Atlassian API token for
 that account and configure the ignored local environment file:
 
 ```sh
@@ -77,12 +77,9 @@ The service uses Jira's REST v3 comment endpoint. It requires HTTPS in normal
 operation; `http://localhost` and loopback IPs are accepted only for test mocks.
 Do not reuse the outbound Jira API token as the inbound webhook secret.
 
-The outgoing connector is an at-least-once delivery system: Wardstone commits
-the question/result and a pending delivery before calling Jira. Retryable
-network, 429, and 5xx failures back off up to five attempts. Jira does not offer
-an idempotency key for comment creation, so an ambiguous network failure after
-Jira accepts a request can produce a duplicate visible comment; the durable
-audit timeline records every confirmed remote comment ID.
+SHADOW mode stores model-generated questions and results as operator-visible
+drafts only. It does not call Jira or require **Add comments** permission. The
+delivery outbox is reserved for a future operator-reviewed sending workflow.
 
 ## Requester replies
 
@@ -102,6 +99,11 @@ Content-Type: application/json
 existing investigation without creating another resume job. Operators can read
 the immutable conversation through
 `GET /v1/investigations/{id}/messages` with `WARDSTONE_OPERATOR_TOKEN`.
+
+The `author` must exactly match the ticket `reporter_email`; other commenters,
+including the Wardstone bot account, receive `403 Forbidden`. Configure the
+Automation rule to exclude the Wardstone service account as a second layer of
+protection.
 
 For Jira Automation, map the issue key to `external_id`, the comment's stable
 ID to `comment_id`, the author identity to `author`, and the comment text to

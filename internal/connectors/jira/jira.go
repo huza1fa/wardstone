@@ -25,8 +25,8 @@ type ReplyPayload struct {
 }
 
 func NormalizeReply(payload ReplyPayload, now time.Time) (string, domain.CaseMessage, error) {
-	if payload.ExternalID == "" || payload.CommentID == "" || payload.Body == "" {
-		return "", domain.CaseMessage{}, errors.New("external_id, comment_id, and body are required")
+	if payload.ExternalID == "" || payload.CommentID == "" || payload.Author == "" || payload.Body == "" {
+		return "", domain.CaseMessage{}, errors.New("external_id, comment_id, author, and body are required")
 	}
 	return payload.ExternalID, domain.CaseMessage{
 		ID: domain.NewMessageID(), Source: Name, ExternalID: payload.CommentID,

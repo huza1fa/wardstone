@@ -55,7 +55,7 @@ func TestJiraReplyWebhookAndConversationReadsUseSeparateTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/v1/tickets/jira/replies", bytes.NewBufferString(`{"external_id":"HELP-1","comment_id":"10001","body":"The asset tag is LT-1042"}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/tickets/jira/replies", bytes.NewBufferString(`{"external_id":"HELP-1","comment_id":"10001","author":"requester@example.com","body":"The asset tag is LT-1042"}`))
 	request.Header.Set("Authorization", "Bearer webhook-secret")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)

@@ -169,7 +169,7 @@ func (s *Store) RecordEvidence(_ context.Context, id domain.InvestigationID, ite
 	return nil
 }
 
-func (s *Store) CompleteInvestigation(_ context.Context, id domain.InvestigationID, diagnosis string, provider domain.ModelProviderName, model string, evaluations []investigations.ActionEvaluation, resultMessage *domain.CaseMessage, at time.Time) error {
+func (s *Store) CompleteInvestigation(_ context.Context, id domain.InvestigationID, diagnosis string, provider domain.ModelProviderName, model string, evaluations []investigations.ActionEvaluation, resultMessage *domain.CaseMessage, _ bool, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.requireRunning(id); err != nil {
@@ -227,7 +227,7 @@ func (s *Store) Handoff(_ context.Context, id domain.InvestigationID, from, to d
 	return nil
 }
 
-func (s *Store) WaitForRequester(_ context.Context, id domain.InvestigationID, message domain.CaseMessage, at time.Time) error {
+func (s *Store) WaitForRequester(_ context.Context, id domain.InvestigationID, message domain.CaseMessage, _ bool, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.requireRunning(id); err != nil {
@@ -260,6 +260,10 @@ func (s *Store) ReceiveRequesterReply(_ context.Context, source domain.Connector
 	item := s.investigations[id]
 	if item.Status != domain.InvestigationWaiting {
 		return "", false, investigations.ErrNotAwaitingReply
+	}
+	ticket := s.tickets[item.TicketID]
+	if message.Author != ticket.ReporterEmail {
+		return "", false, investigations.ErrUnauthorizedReply
 	}
 	message.InvestigationID = id
 	s.messages[id] = append(s.messages[id], message)

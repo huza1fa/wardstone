@@ -16,27 +16,29 @@ import (
 )
 
 type Config struct {
-	DatabaseURL       string
-	ListenAddress     string
-	Mode              domain.OperatingMode
-	Workers           int
-	MaxCollectors     int
-	CollectorTimeout  time.Duration
-	ModelTimeout      time.Duration
-	JobLease          time.Duration
-	ApprovalLifetime  time.Duration
-	JiraWebhookSecret string
-	JiraBaseURL       string
-	JiraEmail         string
-	JiraAPIToken      string
-	OperatorToken     string
-	GoogleBaseURL     string
-	GoogleAccessToken string
-	OpenAIBaseURL     string
-	OpenAIAPIKey      string
-	OpenAIModel       string
-	PolicyRules       map[domain.CapabilityName]policy.RuleMode
-	Specialists       []specialists.Profile
+	DatabaseURL          string
+	ListenAddress        string
+	Mode                 domain.OperatingMode
+	Workers              int
+	MaxCollectors        int
+	CollectorTimeout     time.Duration
+	ModelTimeout         time.Duration
+	JobLease             time.Duration
+	ApprovalLifetime     time.Duration
+	MaxHandoffs          int
+	MaxFollowUpQuestions int
+	JiraWebhookSecret    string
+	JiraBaseURL          string
+	JiraEmail            string
+	JiraAPIToken         string
+	OperatorToken        string
+	GoogleBaseURL        string
+	GoogleAccessToken    string
+	OpenAIBaseURL        string
+	OpenAIAPIKey         string
+	OpenAIModel          string
+	PolicyRules          map[domain.CapabilityName]policy.RuleMode
+	Specialists          []specialists.Profile
 }
 
 func Load() (Config, error) {
@@ -81,14 +83,20 @@ func Load() (Config, error) {
 	if config.ApprovalLifetime, err = durationValue("WARDSTONE_APPROVAL_LIFETIME", 24*time.Hour); err != nil {
 		return Config{}, err
 	}
+	if config.MaxHandoffs, err = intValue("WARDSTONE_MAX_HANDOFFS", 3); err != nil {
+		return Config{}, err
+	}
+	if config.MaxFollowUpQuestions, err = intValue("WARDSTONE_MAX_FOLLOW_UP_QUESTIONS", 3); err != nil {
+		return Config{}, err
+	}
 	if config.Mode != domain.OperatingModeShadow {
 		return Config{}, fmt.Errorf("only SHADOW mode is implemented; got %s", config.Mode)
 	}
 	if config.DatabaseURL == "" || config.JiraWebhookSecret == "" || config.JiraBaseURL == "" || config.JiraEmail == "" || config.JiraAPIToken == "" || config.OperatorToken == "" || config.GoogleAccessToken == "" || config.OpenAIModel == "" {
 		return Config{}, errors.New("WARDSTONE_DATABASE_URL, WARDSTONE_JIRA_WEBHOOK_SECRET, WARDSTONE_JIRA_BASE_URL, WARDSTONE_JIRA_EMAIL, WARDSTONE_JIRA_API_TOKEN, WARDSTONE_OPERATOR_TOKEN, WARDSTONE_GOOGLE_ACCESS_TOKEN, and WARDSTONE_OPENAI_MODEL are required")
 	}
-	if config.Workers < 1 || config.MaxCollectors < 1 {
-		return Config{}, errors.New("worker and collector limits must be positive")
+	if config.Workers < 1 || config.MaxCollectors < 1 || config.MaxHandoffs < 1 || config.MaxFollowUpQuestions < 1 {
+		return Config{}, errors.New("worker, collector, handoff, and follow-up question limits must be positive")
 	}
 	return config, nil
 }

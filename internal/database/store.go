@@ -227,7 +227,7 @@ func (s *Store) RecordEvidence(ctx context.Context, id domain.InvestigationID, i
 	})
 }
 
-func (s *Store) CompleteInvestigation(ctx context.Context, id domain.InvestigationID, diagnosis string, provider domain.ModelProviderName, model string, evaluations []investigations.ActionEvaluation, resultMessage *domain.CaseMessage, at time.Time) error {
+func (s *Store) CompleteInvestigation(ctx context.Context, id domain.InvestigationID, diagnosis string, provider domain.ModelProviderName, model string, evaluations []investigations.ActionEvaluation, resultMessage *domain.CaseMessage, deliver bool, at time.Time) error {
 	return s.transaction(ctx, func(tx pgx.Tx) error {
 		if err := requireLease(ctx, tx, id); err != nil {
 			return err
@@ -271,7 +271,7 @@ func (s *Store) CompleteInvestigation(ctx context.Context, id domain.Investigati
 			}
 		}
 		if resultMessage != nil {
-			if err := insertOutboundMessage(ctx, tx, id, *resultMessage, at); err != nil {
+			if err := insertOutboundMessage(ctx, tx, id, *resultMessage, deliver, at); err != nil {
 				return err
 			}
 		}
@@ -320,7 +320,7 @@ func (s *Store) Handoff(ctx context.Context, id domain.InvestigationID, from, to
 	})
 }
 
-func (s *Store) WaitForRequester(ctx context.Context, id domain.InvestigationID, message domain.CaseMessage, at time.Time) error {
+func (s *Store) WaitForRequester(ctx context.Context, id domain.InvestigationID, message domain.CaseMessage, deliver bool, at time.Time) error {
 	return s.transaction(ctx, func(tx pgx.Tx) error {
 		if err := requireLease(ctx, tx, id); err != nil {
 			return err
@@ -328,7 +328,7 @@ func (s *Store) WaitForRequester(ctx context.Context, id domain.InvestigationID,
 		if err := requireRunning(ctx, tx, id); err != nil {
 			return err
 		}
-		if err := insertOutboundMessage(ctx, tx, id, message, at); err != nil {
+		if err := insertOutboundMessage(ctx, tx, id, message, deliver, at); err != nil {
 			return err
 		}
 		command, err := tx.Exec(ctx, `UPDATE investigations SET status = 'WAITING_ON_REQUESTER' WHERE id = $1 AND status = 'RUNNING'`, id)
@@ -342,7 +342,7 @@ func (s *Store) WaitForRequester(ctx context.Context, id domain.InvestigationID,
 	})
 }
 
-func insertOutboundMessage(ctx context.Context, tx pgx.Tx, investigationID domain.InvestigationID, message domain.CaseMessage, at time.Time) error {
+func insertOutboundMessage(ctx context.Context, tx pgx.Tx, investigationID domain.InvestigationID, message domain.CaseMessage, deliver bool, at time.Time) error {
 	if message.ID == "" || message.ExternalID == "" || message.Direction != domain.MessageOutbound || message.Body == "" {
 		return investigations.ErrInvalidTransition
 	}
@@ -354,6 +354,9 @@ func insertOutboundMessage(ctx context.Context, tx pgx.Tx, investigationID domai
 		message.Author, message.Body, message.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("insert outbound requester message: %w", err)
+	}
+	if !deliver {
+		return nil
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO message_deliveries
 		(id, message_id, status, available_at, created_at)
@@ -372,8 +375,9 @@ func (s *Store) ReceiveRequesterReply(ctx context.Context, source domain.Connect
 	defer func() { _ = tx.Rollback(ctx) }()
 	var id domain.InvestigationID
 	var status domain.InvestigationStatus
-	err = tx.QueryRow(ctx, `SELECT i.id, i.status FROM investigations i
-		JOIN tickets t ON t.id = i.ticket_id WHERE t.source = $1 AND t.external_id = $2 FOR UPDATE`, source, ticketExternalID).Scan(&id, &status)
+	var reporterEmail string
+	err = tx.QueryRow(ctx, `SELECT i.id, i.status, t.reporter_email FROM investigations i
+		JOIN tickets t ON t.id = i.ticket_id WHERE t.source = $1 AND t.external_id = $2 FOR UPDATE`, source, ticketExternalID).Scan(&id, &status, &reporterEmail)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, investigations.ErrNotFound
 	}
@@ -390,6 +394,9 @@ func (s *Store) ReceiveRequesterReply(ctx context.Context, source domain.Connect
 	}
 	if status != domain.InvestigationWaiting {
 		return "", false, investigations.ErrNotAwaitingReply
+	}
+	if message.Author != reporterEmail {
+		return "", false, investigations.ErrUnauthorizedReply
 	}
 	message.InvestigationID = id
 	_, err = tx.Exec(ctx, `INSERT INTO case_messages
@@ -473,9 +480,15 @@ func (s *Store) Claim(ctx context.Context, owner string, lease time.Duration) (w
 		return worker.Job{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	_, err = tx.Exec(ctx, `UPDATE jobs SET status = 'DEAD', last_error = 'maximum job attempts exceeded',
+		completed_at = now(), lease_owner = NULL, lease_expires_at = NULL
+		WHERE status = 'RUNNING' AND lease_expires_at < now() AND attempt >= 3`)
+	if err != nil {
+		return worker.Job{}, err
+	}
 	var job worker.Job
 	err = tx.QueryRow(ctx, `SELECT id, kind, investigation_id, attempt FROM jobs
-		WHERE available_at <= now() AND (status = 'PENDING' OR (status = 'RUNNING' AND lease_expires_at < now()))
+		WHERE available_at <= now() AND attempt < 3 AND (status = 'PENDING' OR (status = 'RUNNING' AND lease_expires_at < now()))
 		ORDER BY available_at, created_at FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&job.ID, &job.Kind, &job.InvestigationID, &job.Attempt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return worker.Job{}, worker.ErrNoJob

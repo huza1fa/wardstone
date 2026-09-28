@@ -192,7 +192,7 @@ func TestRequesterConversationPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	question := domain.CaseMessage{ID: domain.NewMessageID(), Source: "jira", ExternalID: "wardstone-question-" + string(investigationID), Direction: domain.MessageOutbound, Body: "Which VPN error do you see?", CreatedAt: now}
-	if err := store.WaitForRequester(ctx, investigationID, question, now); err != nil {
+	if err := store.WaitForRequester(ctx, investigationID, question, false, now); err != nil {
 		t.Fatal(err)
 	}
 	var deliveryStatus domain.DeliveryStatus

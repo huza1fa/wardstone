@@ -50,16 +50,13 @@ not a prerequisite for the core case lifecycle.
 ## Jira development setup
 
 Wardstone's Jira connector uses a dedicated Jira account with permission to
-browse the target project and add comments. Configure its base URL, account
+browse the target project. Configure its base URL, account
 email, API token, and a separate inbound webhook secret. The application rejects
 non-HTTPS Jira URLs except loopback addresses used for local development.
 
-Questions and final investigation summaries use a durable outbox: a database
-transaction commits the case transition, comment body, and pending delivery
-together. A leased dispatcher then posts the Jira comment and records its remote
-comment ID. Transient Jira failures retry with bounded exponential backoff;
-permanent failures become visible as audit events and remain in the database for
-operator investigation.
+In SHADOW mode, questions and final investigation summaries are durable drafts
+visible to operators; Wardstone never posts model-generated content to Jira.
+The delivery outbox is retained for a future reviewed sending workflow.
 
 See [development setup](docs/development.md) for the environment variables and
 Jira Automation payload shape.

@@ -130,19 +130,4 @@ FOR EACH ROW EXECUTE FUNCTION reject_audit_mutation();
 
 INSERT INTO schema_migrations(version) VALUES (1);
 
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'wardstone_runtime') THEN
-        CREATE ROLE wardstone_runtime LOGIN PASSWORD 'wardstone';
-    END IF;
-END;
-$$;
-REVOKE ALL ON SCHEMA public FROM PUBLIC;
-GRANT USAGE ON SCHEMA public TO wardstone_runtime;
-GRANT SELECT ON schema_migrations TO wardstone_runtime;
-GRANT SELECT, INSERT, UPDATE ON tickets, investigations, evidence, proposed_actions,
-    approvals, executions, verifications, jobs TO wardstone_runtime;
-GRANT SELECT, INSERT ON audit_events TO wardstone_runtime;
-GRANT USAGE, SELECT ON SEQUENCE audit_events_id_seq TO wardstone_runtime;
-
 COMMIT;

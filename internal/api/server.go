@@ -126,7 +126,7 @@ func (s *Server) receiveJiraReply(writer http.ResponseWriter, request *http.Requ
 	}
 	ticketExternalID, message, err := jira.NormalizeReply(payload, s.now())
 	if err != nil || len(message.Body) > 16000 {
-		writeError(writer, http.StatusBadRequest, "external_id, comment_id, and a reply of at most 16000 bytes are required")
+		writeError(writer, http.StatusBadRequest, "external_id, comment_id, author, and a reply of at most 16000 bytes are required")
 		return
 	}
 	id, created, err := s.conversations.ReceiveRequesterReply(request.Context(), jira.Name, ticketExternalID, message)
@@ -136,6 +136,14 @@ func (s *Server) receiveJiraReply(writer http.ResponseWriter, request *http.Requ
 	}
 	if errors.Is(err, investigations.ErrNotAwaitingReply) {
 		writeError(writer, http.StatusConflict, "investigation is not awaiting a requester reply")
+		return
+	}
+	if errors.Is(err, investigations.ErrUnauthorizedReply) {
+		writeError(writer, http.StatusForbidden, "reply author is not the ticket requester")
+		return
+	}
+	if errors.Is(err, investigations.ErrUnauthorizedReply) {
+		writeError(writer, http.StatusForbidden, "reply author is not the ticket requester")
 		return
 	}
 	if err != nil {

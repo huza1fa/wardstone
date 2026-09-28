@@ -261,7 +261,8 @@ production-oriented baseline.
 PostgreSQL contains durable control-plane state. Migrations run as an owner role;
 the application uses a restricted runtime role that cannot update or delete
 audit events. Remote deployments should also use TLS, encrypted storage, and
-backups. Sensitive vendor payloads are redacted before audit persistence.
+backups. Sensitive vendor payloads are stored as received; configurable
+redaction is planned and must not be assumed.
 
 ## SHADOW vertical slice
 
@@ -279,7 +280,8 @@ backups. Sensitive vendor payloads are redacted before audit persistence.
 8. Policy evaluates each proposal. SHADOW mode forces every mutating action to
    `DENY` with reason `shadow_mode`; read capabilities may be allowed but are not
    executed from model proposals in this slice.
-9. The investigation completes and its ordered timeline is available by API.
+9. The investigation completes and its ordered timeline plus outbound drafts are
+   available by API. SHADOW mode never posts model-generated content to Jira.
 
 No Slack approval is requested and no Google mutation is possible in this
 milestone. Approval and executor contracts/schema exist to make the later path
@@ -291,9 +293,10 @@ explicit, not active.
 | --- | --- |
 | Jira duplicate delivery | Unique source/external ID and dedupe job key return the existing ticket/investigation |
 | Jira duplicate reply | Unique connector/comment ID returns the existing case without a second resume job |
+| Untrusted reply author | The author must equal the ticket reporter; bot and third-party comments are rejected |
 | Reply races with a duplicate webhook | The ticket investigation row is locked; exactly one transaction records the reply and enqueues resume |
 | HTTP client disconnect | Does not cancel accepted durable work; only request parsing/response work uses that context |
-| Worker shutdown | Cancels owned investigations, releases/lets leases expire, and leaves retryable durable jobs |
+| Worker shutdown | Cancels owned investigations, releases/lets leases expire, and leaves retryable durable jobs; jobs stop after three attempts |
 | Connector timeout/throttle | Per-call timeout; bounded exponential backoff only for safe reads and explicit retryable responses |
 | Partial evidence failure | Persist structured failure, continue when enough evidence remains |
 | Model timeout | Fail the attempt without retrying model output in place; an operator may start a new investigation |
@@ -330,10 +333,8 @@ network I/O.
 
 ## Observability and performance
 
-Logs use stable IDs and never log credentials or raw secrets. Metrics cover job
-depth/age, active investigations, collector/model latency, timeout and error
-counts, policy decisions, and event append failures. Trace spans follow a ticket
-through collectors and the model call.
+Logs use stable IDs and never log credentials or raw secrets. Metrics and traces
+are planned; they are not implemented in this milestone.
 
 The service uses ordinary Go profiling endpoints only when explicitly enabled
 on a separate administrative listener. Concurrency-sensitive packages run under
