@@ -21,8 +21,6 @@ CREATE TRIGGER case_messages_no_update_or_delete
 BEFORE UPDATE OR DELETE ON case_messages
 FOR EACH ROW EXECUTE FUNCTION reject_audit_mutation();
 
-GRANT SELECT, INSERT ON case_messages TO wardstone_runtime;
-
 INSERT INTO schema_migrations(version) VALUES (3);
 
 COMMIT;

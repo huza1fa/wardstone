@@ -15,8 +15,6 @@ CREATE TABLE message_deliveries (
 );
 CREATE INDEX message_deliveries_claim_idx ON message_deliveries(status, available_at, lease_expires_at);
 
-GRANT SELECT, INSERT, UPDATE ON message_deliveries TO wardstone_runtime;
-
 INSERT INTO schema_migrations(version) VALUES (4);
 
 COMMIT;

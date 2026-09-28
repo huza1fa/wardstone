@@ -82,8 +82,6 @@ ALTER TABLE approvals
         ))
     );
 
-REVOKE UPDATE ON proposed_actions FROM wardstone_runtime;
-
 INSERT INTO schema_migrations(version) VALUES (2);
 
 COMMIT;
