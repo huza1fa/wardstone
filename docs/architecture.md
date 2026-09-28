@@ -16,6 +16,11 @@ model API.
 Implementation packages live under `internal/`. No public `pkg/` API is exposed
 until an external connector/plugin contract is stable enough to support.
 
+The intended dispatcher/specialist control model, trust boundary, and human
+escalation principles are defined in the [operating model](operating-model.md).
+This architecture describes the shared runtime that enforces that model;
+specialists must not introduce separate orchestration or authority paths.
+
 ## Modules
 
 | Package | Responsibility |
@@ -33,6 +38,7 @@ until an external connector/plugin contract is stable enough to support.
 | `internal/approvals` | Approval lifecycle and exact-action binding |
 | `internal/executor` | The only path to privileged mutating connector methods |
 | `internal/investigations` | Ordered workflow and concurrent evidence collection |
+| `internal/specialists` | Immutable specialist profiles and deterministic, least-privilege dispatcher |
 | `internal/worker` | Bounded workers over durably leased jobs |
 | `internal/sandbox` | Unprivileged research runtime contract |
 | `internal/tui` | Charm terminal client and presentation model over the operator API |
@@ -147,13 +153,14 @@ Consumers order by sequence, not wall-clock time.
 The first workflow emits this ordered lifecycle:
 
 1. `ticket.received`
-2. `investigation.started`
-3. One `tool.invoked` for each planned evidence query
-4. `evidence.collected` or `evidence.collection_failed` for each result
-5. `diagnosis.generated`
-6. Zero or more `action.proposed`
-7. One `policy.evaluated` per action
-8. `investigation.completed` or `investigation.failed`
+2. `dispatcher.routed`, recording the deterministic classification and selected specialist
+3. `investigation.started` and `specialist.started`
+4. One `tool.invoked` for each profile-permitted evidence query
+5. `evidence.collected` or `evidence.collection_failed` for each result
+6. Either `specialist.handed_off` and a new durable job, or `diagnosis.generated`
+7. Zero or more `action.proposed`
+8. One `policy.evaluated` per action
+9. `specialist.completed` and `investigation.completed`, or `investigation.failed`
 
 Future approval/execution stages add `approval.requested`,
 `approval.granted|denied|expired`, `action.executed|failed`,
@@ -230,10 +237,14 @@ The HTTP boundary authenticates webhook and operator requests before normalized
 domain data enters the core. Vendor payloads, model output, ticket content, and
 sandbox output are untrusted input and are validated with size and shape limits.
 
-The agent/model boundary receives ticket text and selected evidence. It can
-request registered read capabilities and propose structured actions, but has no
-reference to `executor.Executor`, approval storage, or privileged mutators.
-Prompt text can never grant authority.
+The agent/model boundary receives ticket text, selected evidence, and the
+administrator-configured profile for its selected specialist. The dispatcher
+has no connector or mutation capability. A profile can see only its allowlisted
+read collectors and can propose only its allowlisted capabilities; both are
+validated by deterministic Go code. A model may request an installed,
+profile-approved handoff, but it cannot select arbitrary tools, capabilities,
+or authority. It has no reference to `executor.Executor`, approval storage, or
+privileged mutators. Prompt text can never grant authority.
 
 The executor boundary owns privileged connector interfaces. It independently
 loads the immutable action, capability metadata, current policy result, and
@@ -257,7 +268,9 @@ backups. Sensitive vendor payloads are redacted before audit persistence.
 1. A Jira webhook is authenticated and normalized.
 2. The ticket and pending investigation/job are inserted idempotently.
 3. A bounded worker claims the job and marks the investigation running.
-4. Google read collectors gather user and group context concurrently.
+4. The deterministic dispatcher records a Help Desk or Access Management
+   route. Only that specialist's Google read collectors gather context
+   concurrently.
 5. Successful evidence and structured failures are persisted.
 6. The configured model provider generates a diagnosis and zero or more
    structured action proposals referencing evidence IDs.

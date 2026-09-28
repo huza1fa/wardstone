@@ -166,7 +166,7 @@
       ]);
       const fields = node("div", { className: "detail-grid" }, [
         detailField("Status", investigation.status), detailField("Ticket ID", investigation.ticket_id),
-        detailField("Model", investigation.model || "—"), detailField("Prompt", investigation.prompt_version || "—"),
+        detailField("Specialist", investigation.specialist || "Unassigned"), detailField("Model", investigation.model || "—"), detailField("Prompt", investigation.prompt_version || "—"),
         detailField("Started", formatDate(investigation.started_at)), detailField("Completed", formatDate(investigation.completed_at)),
       ]);
       const timeline = node("ol", { className: "timeline" });

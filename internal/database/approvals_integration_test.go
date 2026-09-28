@@ -13,6 +13,8 @@ import (
 	"github.com/wardstone-project/wardstone/internal/audit"
 	"github.com/wardstone-project/wardstone/internal/domain"
 	"github.com/wardstone-project/wardstone/internal/investigations"
+	"github.com/wardstone-project/wardstone/internal/specialists"
+	"github.com/wardstone-project/wardstone/internal/worker"
 )
 
 func TestApprovalLifecyclePostgres(t *testing.T) {
@@ -243,9 +245,23 @@ func TestRequesterConversationPostgres(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE case_messages SET body = 'tampered' WHERE id = $1`, question.ID); err == nil {
 		t.Fatal("database allowed a case message to change")
 	}
-	job, err := store.Claim(ctx, "conversation-test", time.Minute)
-	if err != nil || job.InvestigationID != investigationID || job.Kind != "investigate" {
-		t.Fatalf("resumed job = %+v, err=%v", job, err)
+	var job worker.Job
+	if err := pool.QueryRow(ctx, `SELECT id, kind, investigation_id, attempt FROM jobs
+		WHERE investigation_id = $1 AND status = 'PENDING' ORDER BY created_at DESC LIMIT 1`, investigationID).Scan(
+		&job.ID, &job.Kind, &job.InvestigationID, &job.Attempt); err != nil {
+		t.Fatalf("load resumed job: %v", err)
+	}
+	if job.InvestigationID != investigationID || job.Kind != "investigate" {
+		t.Fatalf("resumed job = %+v", job)
+	}
+	job.Attempt++
+	job.LeaseOwner = "conversation-test"
+	command, err := pool.Exec(ctx, `UPDATE jobs SET status = 'RUNNING', attempt = $2, lease_owner = $3,
+		lease_expires_at = now() + interval '1 minute' WHERE id = $1 AND status = 'PENDING'`, job.ID, job.Attempt, job.LeaseOwner)
+	if err != nil {
+		t.Fatalf("lease resumed job: %v", err)
+	} else if command.RowsAffected() != 1 {
+		t.Fatalf("lease resumed job affected %d rows", command.RowsAffected())
 	}
 	if err := store.Complete(ctx, job); err != nil {
 		t.Fatal(err)
@@ -254,5 +270,60 @@ func TestRequesterConversationPostgres(t *testing.T) {
 		ID: domain.NewMessageID(), Source: "jira", ExternalID: "new-comment-" + string(investigationID), Direction: domain.MessageInbound, Body: "Another detail", CreatedAt: now,
 	}, now); !errors.Is(err, investigations.ErrNotAwaitingReply) {
 		t.Fatalf("second distinct reply error = %v, want %v", err, investigations.ErrNotAwaitingReply)
+	}
+}
+
+func TestSpecialistHandoffPostgres(t *testing.T) {
+	databaseURL := os.Getenv("WARDSTONE_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("WARDSTONE_TEST_DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	store := NewStore(pool)
+	now := time.Now().UTC()
+	ticketID, investigationID := domain.NewTicketID(), domain.NewInvestigationID()
+	ticket := domain.Ticket{
+		ID: ticketID, Source: "jira", ExternalID: "TEST-" + string(ticketID),
+		Summary: "VPN issue", CreatedAt: now,
+	}
+	investigation := domain.Investigation{
+		ID: investigationID, TicketID: ticketID, Status: domain.InvestigationPending,
+		PromptVersion: "test-v1", CreatedAt: now,
+	}
+	if _, created, err := store.ReceiveTicket(ctx, ticket, investigation); err != nil || !created {
+		t.Fatalf("receive ticket: created=%v err=%v", created, err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `UPDATE jobs SET status = 'COMPLETED', completed_at = now(), lease_owner = NULL, lease_expires_at = NULL WHERE investigation_id = $1`, investigationID)
+	})
+	if err := store.Dispatch(ctx, investigationID, specialists.HelpDesk, "help_desk", "default route", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StartInvestigation(ctx, investigationID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Handoff(ctx, investigationID, specialists.HelpDesk, specialists.AccessManagement, "Identity evidence indicates an entitlement problem.", now); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.GetInvestigation(ctx, investigationID)
+	if err != nil || item.Status != domain.InvestigationPending || item.Specialist != specialists.AccessManagement {
+		t.Fatalf("handoff investigation = %+v, err=%v", item, err)
+	}
+	var queued int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE investigation_id = $1 AND status = 'PENDING'`, investigationID).Scan(&queued); err != nil || queued != 2 {
+		t.Fatalf("queued handoff jobs = %d, err=%v; want original and handoff jobs", queued, err)
+	}
+	timeline, err := store.Timeline(ctx, investigationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline) < 4 || timeline[1].Type != audit.DispatcherRouted || timeline[2].Type != audit.InvestigationStarted || timeline[3].Type != audit.SpecialistStarted || timeline[len(timeline)-1].Type != audit.SpecialistHandedOff {
+		t.Fatalf("unexpected handoff timeline: %+v", timeline)
 	}
 }

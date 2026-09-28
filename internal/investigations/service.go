@@ -13,6 +13,7 @@ import (
 	"github.com/wardstone-project/wardstone/internal/capabilities"
 	"github.com/wardstone-project/wardstone/internal/connectors"
 	"github.com/wardstone-project/wardstone/internal/domain"
+	"github.com/wardstone-project/wardstone/internal/specialists"
 )
 
 const (
@@ -40,21 +41,24 @@ type Config struct {
 	CollectorTimeout        time.Duration
 	ModelTimeout            time.Duration
 	PromptVersion           string
+	Specialists             *specialists.Registry
 }
 
 type Service struct {
-	store      Store
-	collectors []connectors.EvidenceCollector
-	model      agent.ModelProvider
-	registry   *capabilities.Registry
-	policy     PolicyEvaluator
-	config     Config
-	clock      Clock
+	store       Store
+	collectors  []connectors.EvidenceCollector
+	model       agent.ModelProvider
+	registry    *capabilities.Registry
+	policy      PolicyEvaluator
+	config      Config
+	clock       Clock
+	specialists *specialists.Registry
+	dispatcher  *specialists.Dispatcher
 }
 
 func NewService(store Store, collectors []connectors.EvidenceCollector, model agent.ModelProvider, registry *capabilities.Registry, policy PolicyEvaluator, config Config) (*Service, error) {
-	if store == nil || model == nil || registry == nil || policy == nil {
-		return nil, errors.New("store, model, capability registry, and policy evaluator are required")
+	if store == nil || model == nil || registry == nil || policy == nil || config.Specialists == nil {
+		return nil, errors.New("store, model, capability registry, policy evaluator, and specialist registry are required")
 	}
 	if config.MaxConcurrentCollectors < 1 {
 		return nil, errors.New("max concurrent collectors must be positive")
@@ -65,9 +69,30 @@ func NewService(store Store, collectors []connectors.EvidenceCollector, model ag
 	if config.PromptVersion == "" {
 		return nil, errors.New("prompt version is required")
 	}
+	dispatcher, err := specialists.NewDispatcher(config.Specialists)
+	if err != nil {
+		return nil, fmt.Errorf("create dispatcher: %w", err)
+	}
+	for _, profile := range config.Specialists.Profiles() {
+		for _, name := range profile.AllowedCollectors {
+			definition, err := registry.Get(name)
+			if err != nil {
+				return nil, fmt.Errorf("specialist %q references unknown capability %q: %w", profile.Name, name, err)
+			}
+			if definition.Effect != domain.EffectRead {
+				return nil, fmt.Errorf("specialist %q configures mutating collector capability %q", profile.Name, name)
+			}
+		}
+		for _, name := range profile.AllowedCapabilities {
+			if _, err := registry.Get(name); err != nil {
+				return nil, fmt.Errorf("specialist %q references unknown capability %q: %w", profile.Name, name, err)
+			}
+		}
+	}
 	return &Service{
 		store: store, collectors: append([]connectors.EvidenceCollector(nil), collectors...),
 		model: model, registry: registry, policy: policy, config: config, clock: realClock{},
+		specialists: config.Specialists, dispatcher: dispatcher,
 	}, nil
 }
 
@@ -129,6 +154,17 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 	if err != nil {
 		return fmt.Errorf("load ticket: %w", err)
 	}
+	if existing.Specialist == "" {
+		decision := s.dispatcher.Dispatch(ticket)
+		if err := s.store.Dispatch(ctx, id, decision.Specialist, decision.Classification, decision.Reason, s.clock.Now()); err != nil {
+			return fmt.Errorf("dispatch investigation: %w", err)
+		}
+		existing.Specialist = decision.Specialist
+	}
+	profile, ok := s.specialists.Get(existing.Specialist)
+	if !ok {
+		return fmt.Errorf("investigation has unknown specialist %q", existing.Specialist)
+	}
 	messages, err := s.store.ListMessages(ctx, id)
 	if err != nil {
 		return fmt.Errorf("load conversation: %w", err)
@@ -145,8 +181,14 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 		_ = s.store.FailInvestigation(cleanupCtx, id, runErr.Error(), s.clock.Now())
 	}()
 
-	tools := make([]ToolInvocation, len(s.collectors))
-	for i, collector := range s.collectors {
+	activeCollectors := make([]connectors.EvidenceCollector, 0, len(s.collectors))
+	for _, collector := range s.collectors {
+		if s.specialists.AllowsCollector(profile.Name, collector.Capability()) {
+			activeCollectors = append(activeCollectors, collector)
+		}
+	}
+	tools := make([]ToolInvocation, len(activeCollectors))
+	for i, collector := range activeCollectors {
 		tools[i] = ToolInvocation{Connector: collector.Name(), Capability: collector.Capability()}
 	}
 	if err := s.store.RecordToolInvocations(ctx, id, tools, s.clock.Now()); err != nil {
@@ -158,11 +200,11 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 		err      error
 		duration time.Duration
 	}
-	results := make([]collectorResult, len(s.collectors))
+	results := make([]collectorResult, len(activeCollectors))
 	group, groupCtx := errgroup.WithContext(ctx)
 	semaphore := make(chan struct{}, s.config.MaxConcurrentCollectors)
 	var schedulingErr error
-	for i, collector := range s.collectors {
+	for i, collector := range activeCollectors {
 		select {
 		case semaphore <- struct{}{}:
 		case <-groupCtx.Done():
@@ -216,13 +258,14 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 	if err := s.store.RecordEvidence(ctx, id, evidence, failures, s.clock.Now()); err != nil {
 		return fmt.Errorf("record evidence: %w", err)
 	}
-	if len(s.collectors) > 0 && len(evidence) == 0 {
+	if len(activeCollectors) > 0 && len(evidence) == 0 {
 		return errors.New("all evidence collectors failed or returned no evidence")
 	}
 
 	modelCtx, cancel := context.WithTimeout(ctx, s.config.ModelTimeout)
 	result, err := s.model.Diagnose(modelCtx, agent.Request{
 		InvestigationID: id, Ticket: ticket, Evidence: evidence, Conversation: messages, Warnings: warnings,
+		Specialist: profile.Name, Instructions: profile.Instructions,
 	})
 	cancel()
 	if err != nil {
@@ -230,6 +273,21 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 	}
 	if len(result.FollowUpQuestion) > maxFollowUpQuestionSize {
 		return fmt.Errorf("model follow-up question exceeds %d bytes", maxFollowUpQuestionSize)
+	}
+	if result.Handoff != nil {
+		if result.Diagnosis != "" || result.FollowUpQuestion != "" || len(result.Actions) != 0 {
+			return errors.New("model handoff cannot include a diagnosis, question, or actions")
+		}
+		if result.Handoff.Specialist == "" || strings.TrimSpace(result.Handoff.Reason) == "" || len(result.Handoff.Reason) > maxActionReasonSize {
+			return errors.New("model handoff requires a target specialist and concise reason")
+		}
+		if !s.specialists.AllowsHandoff(profile.Name, result.Handoff.Specialist) {
+			return fmt.Errorf("specialist %q cannot hand off to %q", profile.Name, result.Handoff.Specialist)
+		}
+		if err := s.store.Handoff(ctx, id, profile.Name, result.Handoff.Specialist, result.Handoff.Reason, s.clock.Now()); err != nil {
+			return fmt.Errorf("handoff investigation: %w", err)
+		}
+		return nil
 	}
 	if result.FollowUpQuestion != "" {
 		if result.Diagnosis != "" || len(result.Actions) != 0 {
@@ -280,6 +338,9 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 		}
 		if err := s.registry.ValidateAction(action); err != nil {
 			return fmt.Errorf("validate proposed action: %w", err)
+		}
+		if !s.specialists.AllowsCapability(profile.Name, action.Capability) {
+			return fmt.Errorf("specialist %q is not permitted to propose capability %q", profile.Name, action.Capability)
 		}
 		evaluations = append(evaluations, ActionEvaluation{Action: action, Policy: s.policy.Evaluate(ctx, action)})
 	}

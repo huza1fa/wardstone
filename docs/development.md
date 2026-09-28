@@ -23,6 +23,16 @@ docker compose exec -T postgres psql -U wardstone_admin -d wardstone \
 Never reapply a migration whose version already appears in
 `schema_migrations`.
 
+## Specialist profiles
+
+`WARDSTONE_CONFIG_FILE` is administrator-owned configuration. It defines both
+capability policy and specialist profiles. A profile has bounded instructions,
+an allowlist of read collectors, an allowlist of capabilities it may propose,
+and explicit handoff targets. The supplied configuration enables Help Desk and
+Access Management; follow its structure when adding a specialist. A profile
+never grants execution authority—every proposal still passes deterministic
+capability validation and policy.
+
 ## Checks
 
 ```sh

@@ -5,6 +5,11 @@ teams. It takes the interrupt-driven L1/L2 work that fragments an operator's
 day, gathers the missing context, and returns a decision-ready result instead
 of another chat thread to manage.
 
+Its canonical [operating model](docs/operating-model.md) is a lightweight
+dispatcher coordinating least-privilege operational specialists. Models may
+investigate and propose; deterministic policy and explicit authority controls
+all meaningful state changes.
+
 Wardstone is not a chatbot, ITSM, MDM, or hosted service. Administrators retain
 their infrastructure, credentials, policy, and model-provider accounts.
 

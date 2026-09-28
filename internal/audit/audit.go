@@ -11,6 +11,10 @@ type EventType string
 
 const (
 	TicketReceived            EventType = "ticket.received"
+	DispatcherRouted          EventType = "dispatcher.routed"
+	SpecialistStarted         EventType = "specialist.started"
+	SpecialistHandedOff       EventType = "specialist.handed_off"
+	SpecialistCompleted       EventType = "specialist.completed"
 	InvestigationStarted      EventType = "investigation.started"
 	ToolInvoked               EventType = "tool.invoked"
 	EvidenceCollected         EventType = "evidence.collected"

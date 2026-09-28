@@ -89,6 +89,30 @@ func (s *Store) ListMessages(_ context.Context, id domain.InvestigationID) ([]do
 	return result, nil
 }
 
+func (s *Store) Dispatch(_ context.Context, id domain.InvestigationID, specialist domain.SpecialistName, classification, reason string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, ok := s.investigations[id]
+	if !ok {
+		return investigations.ErrNotFound
+	}
+	if item.Specialist != "" {
+		if item.Specialist == specialist {
+			return nil
+		}
+		return fmt.Errorf("%w: specialist already selected", investigations.ErrInvalidTransition)
+	}
+	if item.Status != domain.InvestigationPending || specialist == "" || classification == "" || reason == "" {
+		return investigations.ErrInvalidTransition
+	}
+	item.Specialist = specialist
+	s.investigations[id] = item
+	s.appendEvent(id, audit.DispatcherRouted, audit.ActorSystem, "dispatcher", at, map[string]any{
+		"specialist": specialist, "classification": classification, "reason": reason,
+	})
+	return nil
+}
+
 func (s *Store) StartInvestigation(_ context.Context, id domain.InvestigationID, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -105,6 +129,9 @@ func (s *Store) StartInvestigation(_ context.Context, id domain.InvestigationID,
 	item.Status, item.StartedAt = domain.InvestigationRunning, &at
 	s.investigations[id] = item
 	s.appendEvent(id, audit.InvestigationStarted, audit.ActorSystem, "orchestrator", at, map[string]any{"prompt_version": item.PromptVersion})
+	if item.Specialist != "" {
+		s.appendEvent(id, audit.SpecialistStarted, audit.ActorSystem, string(item.Specialist), at, map[string]any{"specialist": item.Specialist})
+	}
 	return nil
 }
 
@@ -172,7 +199,31 @@ func (s *Store) CompleteInvestigation(_ context.Context, id domain.Investigation
 	}
 	item.Status, item.CompletedAt = domain.InvestigationCompleted, &at
 	s.investigations[id] = item
+	if item.Specialist != "" {
+		s.appendEvent(id, audit.SpecialistCompleted, audit.ActorSystem, string(item.Specialist), at, map[string]any{"specialist": item.Specialist})
+	}
 	s.appendEvent(id, audit.InvestigationCompleted, audit.ActorSystem, "orchestrator", at, map[string]any{"actions_proposed": len(evaluations)})
+	return nil
+}
+
+func (s *Store) Handoff(_ context.Context, id domain.InvestigationID, from, to domain.SpecialistName, reason string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if reason == "" || from == "" || to == "" || from == to {
+		return investigations.ErrInvalidTransition
+	}
+	item, ok := s.investigations[id]
+	if !ok {
+		return investigations.ErrNotFound
+	}
+	if item.Status != domain.InvestigationRunning || item.Specialist != from {
+		return investigations.ErrInvalidTransition
+	}
+	item.Status, item.Specialist = domain.InvestigationPending, to
+	s.investigations[id] = item
+	s.appendEvent(id, audit.SpecialistHandedOff, audit.ActorModel, string(from), at, map[string]any{
+		"from": from, "to": to, "reason": reason,
+	})
 	return nil
 }
 

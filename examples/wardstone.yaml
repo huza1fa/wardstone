@@ -11,3 +11,24 @@ capabilities:
     mode: approval
   google.groups.remove_member:
     mode: approval
+
+specialists:
+  - name: help_desk
+    instructions: >-
+      Investigate user-facing operational issues, gather missing facts, and
+      hand off access or entitlement work when evidence shows that domain is responsible.
+    collectors:
+      - google.users.get
+      - google.users.list_groups
+    handoff_to:
+      - access_management
+  - name: access_management
+    instructions: >-
+      Investigate identity, group membership, licensing, roles, and
+      entitlements. Propose only evidence-backed access changes.
+    collectors:
+      - google.users.get
+      - google.users.list_groups
+    capabilities:
+      - google.groups.add_member
+      - google.groups.remove_member

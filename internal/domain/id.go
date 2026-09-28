@@ -19,6 +19,7 @@ type DeliveryID string
 type ConnectorName string
 type CapabilityName string
 type ModelProviderName string
+type SpecialistName string
 
 func NewTicketID() TicketID               { return TicketID(newID("tkt")) }
 func NewInvestigationID() InvestigationID { return InvestigationID(newID("inv")) }

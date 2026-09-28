@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/wardstone-project/wardstone/internal/investigations"
 	"github.com/wardstone-project/wardstone/internal/investigations/memory"
 	"github.com/wardstone-project/wardstone/internal/policy"
+	"github.com/wardstone-project/wardstone/internal/specialists"
 )
 
 func TestInvestigationCompletesWithPartialEvidenceAndShadowDecision(t *testing.T) {
@@ -70,9 +72,9 @@ func TestInvestigationCompletesWithPartialEvidenceAndShadowDecision(t *testing.T
 		t.Fatal(err)
 	}
 	wantTypes := []audit.EventType{
-		audit.TicketReceived, audit.InvestigationStarted, audit.ToolInvoked, audit.ToolInvoked,
+		audit.TicketReceived, audit.DispatcherRouted, audit.InvestigationStarted, audit.SpecialistStarted, audit.ToolInvoked, audit.ToolInvoked,
 		audit.EvidenceCollected, audit.EvidenceCollectionFailed, audit.DiagnosisGenerated,
-		audit.ActionProposed, audit.PolicyEvaluated, audit.InvestigationCompleted,
+		audit.ActionProposed, audit.PolicyEvaluated, audit.SpecialistCompleted, audit.InvestigationCompleted,
 	}
 	if len(timeline) != len(wantTypes) {
 		t.Fatalf("timeline length = %d, want %d: %+v", len(timeline), len(wantTypes), timeline)
@@ -344,6 +346,108 @@ func TestActionWithoutEvidenceIsRejected(t *testing.T) {
 	}
 }
 
+func TestHelpDeskHandoffResumesWithAccessSpecialist(t *testing.T) {
+	t.Parallel()
+	store := memory.NewStore()
+	var calls atomic.Int32
+	model := modelFunc(func(_ context.Context, request agent.Request) (agent.Result, error) {
+		switch calls.Add(1) {
+		case 1:
+			if request.Specialist != specialists.HelpDesk {
+				t.Fatalf("initial specialist = %q, want help desk", request.Specialist)
+			}
+			return agent.Result{Handoff: &agent.Handoff{Specialist: specialists.AccessManagement, Reason: "Evidence points to a missing entitlement."}}, nil
+		case 2:
+			if request.Specialist != specialists.AccessManagement {
+				t.Fatalf("handoff specialist = %q, want access management", request.Specialist)
+			}
+			return agent.Result{Diagnosis: "The account is missing its required group."}, nil
+		default:
+			return agent.Result{}, errors.New("unexpected model call")
+		}
+	})
+	service := newService(t, store, nil, model, registryForTest(t), 1)
+	work := ticket("JIRA-HANDOFF")
+	work.Summary = "VPN connection fails"
+	id, _, err := service.Receive(context.Background(), work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Run(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.GetInvestigation(context.Background(), id)
+	if err != nil || item.Status != domain.InvestigationPending || item.Specialist != specialists.AccessManagement {
+		t.Fatalf("handoff state = %+v, err=%v", item, err)
+	}
+	if err := service.Run(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	item, err = store.GetInvestigation(context.Background(), id)
+	if err != nil || item.Status != domain.InvestigationCompleted || calls.Load() != 2 {
+		t.Fatalf("completed handoff state = %+v calls=%d err=%v", item, calls.Load(), err)
+	}
+	timeline, err := store.Timeline(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wanted := range []audit.EventType{audit.DispatcherRouted, audit.SpecialistStarted, audit.SpecialistHandedOff, audit.SpecialistCompleted} {
+		found := false
+		for _, event := range timeline {
+			found = found || event.Type == wanted
+		}
+		if !found {
+			t.Fatalf("timeline missing %s: %+v", wanted, timeline)
+		}
+	}
+}
+
+func TestHelpDeskCannotProposeAccessCapability(t *testing.T) {
+	t.Parallel()
+	store := memory.NewStore()
+	model := modelFunc(func(_ context.Context, request agent.Request) (agent.Result, error) {
+		return agent.Result{Diagnosis: "Try adding the user to the group.", Actions: []agent.ProposedAction{{
+			Capability: "test.write", Arguments: json.RawMessage(`{"user":"jane@example.com"}`),
+			Reason: "The account needs access.", EvidenceIDs: []domain.EvidenceID{request.Evidence[0].ID},
+		}}}, nil
+	})
+	collector := collectorFunc{name: "directory", collect: func(context.Context, domain.Ticket) ([]domain.Evidence, error) {
+		return []domain.Evidence{{Kind: "user", Summary: "user exists", Data: json.RawMessage(`{}`)}}, nil
+	}}
+	service := newService(t, store, []connectors.EvidenceCollector{collector}, model, registryForTest(t), 1)
+	work := ticket("JIRA-HELP-DESK-BOUNDARY")
+	work.Summary = "VPN connection fails"
+	id, _, err := service.Receive(context.Background(), work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Run(context.Background(), id); err == nil {
+		t.Fatal("expected unauthorized specialist capability to be rejected")
+	}
+	item, err := store.GetInvestigation(context.Background(), id)
+	if err != nil || item.Status != domain.InvestigationFailed {
+		t.Fatalf("investigation = %+v, err=%v", item, err)
+	}
+}
+
+func TestServiceRejectsMutatingCollectorProfile(t *testing.T) {
+	t.Parallel()
+	profiles, err := specialists.NewRegistry(specialists.Profile{
+		Name: specialists.HelpDesk, Instructions: "Help users.", AllowedCollectors: []domain.CapabilityName{"test.write"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = investigations.NewService(memory.NewStore(), nil, modelFunc(noActionDiagnosis), registryForTest(t),
+		policy.New(domain.OperatingModeShadow, registryForTest(t), nil), investigations.Config{
+			MaxConcurrentCollectors: 1, CollectorTimeout: time.Second, ModelTimeout: time.Second,
+			PromptVersion: "test-v1", Specialists: profiles,
+		})
+	if err == nil || !strings.Contains(err.Error(), "mutating collector") {
+		t.Fatalf("error = %v, want mutating collector rejection", err)
+	}
+}
+
 func TestConcurrentDuplicateTicketDeliveryCreatesOneInvestigation(t *testing.T) {
 	t.Parallel()
 	store := memory.NewStore()
@@ -419,9 +523,33 @@ func noActionDiagnosis(context.Context, agent.Request) (agent.Result, error) {
 func newService(t *testing.T, store *memory.Store, collectors []connectors.EvidenceCollector, model agent.ModelProvider, registry *capabilities.Registry, concurrency int) *investigations.Service {
 	t.Helper()
 	evaluator := policy.New(domain.OperatingModeShadow, registry, map[domain.CapabilityName]policy.RuleMode{"test.read": policy.RuleAllow, "test.write": policy.RuleAllow})
+	collectorCapabilities := make([]domain.CapabilityName, 0, len(collectors))
+	for _, collector := range collectors {
+		collectorCapabilities = append(collectorCapabilities, collector.Capability())
+		if _, err := registry.Get(collector.Capability()); errors.Is(err, capabilities.ErrNotFound) {
+			if err := registry.Register(capabilities.Definition{Name: collector.Capability(), Connector: collector.Name(), Description: "test collector", Effect: domain.EffectRead, ArgumentsVersion: 1}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	profiles, err := specialists.NewRegistry(
+		specialists.Profile{
+			Name: specialists.HelpDesk, Instructions: "Test help desk profile.",
+			AllowedCollectors: collectorCapabilities,
+			HandoffTargets:    []domain.SpecialistName{specialists.AccessManagement},
+		},
+		specialists.Profile{
+			Name: specialists.AccessManagement, Instructions: "Test access profile.",
+			AllowedCollectors:   collectorCapabilities,
+			AllowedCapabilities: []domain.CapabilityName{"test.read", "test.write"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	service, err := investigations.NewService(store, collectors, model, registry, evaluator, investigations.Config{
 		MaxConcurrentCollectors: concurrency, CollectorTimeout: time.Minute,
-		ModelTimeout: time.Minute, PromptVersion: "test-v1",
+		ModelTimeout: time.Minute, PromptVersion: "test-v1", Specialists: profiles,
 	})
 	if err != nil {
 		t.Fatal(err)

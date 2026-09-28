@@ -12,6 +12,7 @@ import (
 
 	"github.com/wardstone-project/wardstone/internal/domain"
 	"github.com/wardstone-project/wardstone/internal/policy"
+	"github.com/wardstone-project/wardstone/internal/specialists"
 )
 
 type Config struct {
@@ -35,6 +36,7 @@ type Config struct {
 	OpenAIAPIKey      string
 	OpenAIModel       string
 	PolicyRules       map[domain.CapabilityName]policy.RuleMode
+	Specialists       []specialists.Profile
 }
 
 func Load() (Config, error) {
@@ -101,6 +103,13 @@ func loadPolicy(path string, config *Config) error {
 		Capabilities map[domain.CapabilityName]struct {
 			Mode policy.RuleMode `yaml:"mode"`
 		} `yaml:"capabilities"`
+		Specialists []struct {
+			Name         domain.SpecialistName   `yaml:"name"`
+			Instructions string                  `yaml:"instructions"`
+			Collectors   []domain.CapabilityName `yaml:"collectors"`
+			Capabilities []domain.CapabilityName `yaml:"capabilities"`
+			HandoffTo    []domain.SpecialistName `yaml:"handoff_to"`
+		} `yaml:"specialists"`
 	}
 	decoder := yaml.NewDecoder(io.LimitReader(file, 1<<20))
 	decoder.KnownFields(true)
@@ -126,6 +135,24 @@ func loadPolicy(path string, config *Config) error {
 			return fmt.Errorf("capability %s has invalid policy mode %q", name, entry.Mode)
 		}
 	}
+	profiles := make([]specialists.Profile, 0, len(raw.Specialists))
+	for _, rawProfile := range raw.Specialists {
+		profiles = append(profiles, specialists.Profile{
+			Name:                rawProfile.Name,
+			Instructions:        rawProfile.Instructions,
+			AllowedCollectors:   append([]domain.CapabilityName(nil), rawProfile.Collectors...),
+			AllowedCapabilities: append([]domain.CapabilityName(nil), rawProfile.Capabilities...),
+			HandoffTargets:      append([]domain.SpecialistName(nil), rawProfile.HandoffTo...),
+		})
+	}
+	registry, err := specialists.NewRegistry(profiles...)
+	if err != nil {
+		return fmt.Errorf("specialists: %w", err)
+	}
+	if _, err := specialists.NewDispatcher(registry); err != nil {
+		return fmt.Errorf("specialists: %w", err)
+	}
+	config.Specialists = profiles
 	return nil
 }
 

@@ -25,6 +25,7 @@ import (
 	"github.com/wardstone-project/wardstone/internal/investigations"
 	"github.com/wardstone-project/wardstone/internal/models"
 	"github.com/wardstone-project/wardstone/internal/policy"
+	"github.com/wardstone-project/wardstone/internal/specialists"
 	"github.com/wardstone-project/wardstone/internal/worker"
 )
 
@@ -84,11 +85,16 @@ func run(logger *slog.Logger) error {
 		google.UserCollector{Client: googleClient},
 		google.GroupCollector{Client: googleClient},
 	}
+	specialistRegistry, err := specialists.NewRegistry(settings.Specialists...)
+	if err != nil {
+		return err
+	}
 	service, err := investigations.NewService(store, collectors, model, registry, policyEvaluator, investigations.Config{
 		MaxConcurrentCollectors: settings.MaxCollectors,
 		CollectorTimeout:        settings.CollectorTimeout,
 		ModelTimeout:            settings.ModelTimeout,
 		PromptVersion:           "shadow-v1",
+		Specialists:             specialistRegistry,
 	})
 	if err != nil {
 		return err

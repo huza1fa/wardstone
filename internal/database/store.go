@@ -70,14 +70,43 @@ func (s *Store) ReceiveTicket(ctx context.Context, ticket domain.Ticket, investi
 
 func (s *Store) GetInvestigation(ctx context.Context, id domain.InvestigationID) (domain.Investigation, error) {
 	var item domain.Investigation
-	err := s.pool.QueryRow(ctx, `SELECT id, ticket_id, status, model_provider, model, prompt_version,
+	err := s.pool.QueryRow(ctx, `SELECT id, ticket_id, status, model_provider, model, prompt_version, specialist,
 		diagnosis, failure, created_at, started_at, completed_at FROM investigations WHERE id = $1`, id).Scan(
 		&item.ID, &item.TicketID, &item.Status, &item.ModelProvider, &item.Model, &item.PromptVersion,
-		&item.Diagnosis, &item.Failure, &item.CreatedAt, &item.StartedAt, &item.CompletedAt)
+		&item.Specialist, &item.Diagnosis, &item.Failure, &item.CreatedAt, &item.StartedAt, &item.CompletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Investigation{}, investigations.ErrNotFound
 	}
 	return item, err
+}
+
+func (s *Store) Dispatch(ctx context.Context, id domain.InvestigationID, specialist domain.SpecialistName, classification, reason string, at time.Time) error {
+	if specialist == "" || classification == "" || reason == "" {
+		return investigations.ErrInvalidTransition
+	}
+	return s.transaction(ctx, func(tx pgx.Tx) error {
+		if err := requireLease(ctx, tx, id); err != nil {
+			return err
+		}
+		command, err := tx.Exec(ctx, `UPDATE investigations SET specialist = $2
+			WHERE id = $1 AND status = 'PENDING' AND specialist = ''`, id, specialist)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() == 0 {
+			var current domain.SpecialistName
+			if err := tx.QueryRow(ctx, `SELECT specialist FROM investigations WHERE id = $1`, id).Scan(&current); err != nil {
+				return err
+			}
+			if current == specialist {
+				return nil
+			}
+			return investigations.ErrInvalidTransition
+		}
+		return appendEvent(ctx, tx, id, audit.DispatcherRouted, audit.ActorSystem, "dispatcher", at, map[string]any{
+			"specialist": specialist, "classification": classification, "reason": reason,
+		})
+	})
 }
 
 func (s *Store) GetTicket(ctx context.Context, id domain.InvestigationID) (domain.Ticket, error) {
@@ -124,8 +153,9 @@ func (s *Store) StartInvestigation(ctx context.Context, id domain.InvestigationI
 			return err
 		}
 		var promptVersion string
+		var specialist domain.SpecialistName
 		err := tx.QueryRow(ctx, `UPDATE investigations SET status = 'RUNNING', started_at = COALESCE(started_at, $2)
-			WHERE id = $1 AND status IN ('PENDING', 'RUNNING') RETURNING prompt_version`, id, at).Scan(&promptVersion)
+			WHERE id = $1 AND status IN ('PENDING', 'RUNNING') RETURNING prompt_version, specialist`, id, at).Scan(&promptVersion, &specialist)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return investigations.ErrInvalidTransition
 		}
@@ -137,7 +167,12 @@ func (s *Store) StartInvestigation(ctx context.Context, id domain.InvestigationI
 			return err
 		}
 		if starts == 0 {
-			return appendEvent(ctx, tx, id, audit.InvestigationStarted, audit.ActorSystem, "orchestrator", at, map[string]any{"prompt_version": promptVersion})
+			if err := appendEvent(ctx, tx, id, audit.InvestigationStarted, audit.ActorSystem, "orchestrator", at, map[string]any{"prompt_version": promptVersion}); err != nil {
+				return err
+			}
+		}
+		if specialist != "" {
+			return appendEvent(ctx, tx, id, audit.SpecialistStarted, audit.ActorSystem, string(specialist), at, map[string]any{"specialist": specialist})
 		}
 		return nil
 	})
@@ -240,7 +275,48 @@ func (s *Store) CompleteInvestigation(ctx context.Context, id domain.Investigati
 				return err
 			}
 		}
+		var specialist domain.SpecialistName
+		if err := tx.QueryRow(ctx, `SELECT specialist FROM investigations WHERE id = $1`, id).Scan(&specialist); err != nil {
+			return err
+		}
+		if specialist != "" {
+			if err := appendEvent(ctx, tx, id, audit.SpecialistCompleted, audit.ActorSystem, string(specialist), at, map[string]any{"specialist": specialist}); err != nil {
+				return err
+			}
+		}
 		return appendEvent(ctx, tx, id, audit.InvestigationCompleted, audit.ActorSystem, "orchestrator", at, map[string]any{"actions_proposed": len(evaluations)})
+	})
+}
+
+func (s *Store) Handoff(ctx context.Context, id domain.InvestigationID, from, to domain.SpecialistName, reason string, at time.Time) error {
+	if from == "" || to == "" || from == to || reason == "" {
+		return investigations.ErrInvalidTransition
+	}
+	return s.transaction(ctx, func(tx pgx.Tx) error {
+		if err := requireLease(ctx, tx, id); err != nil {
+			return err
+		}
+		command, err := tx.Exec(ctx, `UPDATE investigations SET status = 'PENDING', specialist = $3
+			WHERE id = $1 AND status = 'RUNNING' AND specialist = $2`, id, from, to)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() != 1 {
+			return investigations.ErrInvalidTransition
+		}
+		if err := appendEvent(ctx, tx, id, audit.SpecialistHandedOff, audit.ActorModel, string(from), at, map[string]any{
+			"from": from, "to": to, "reason": reason,
+		}); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO jobs
+			(id, kind, investigation_id, dedupe_key, status, available_at, created_at)
+			VALUES ($1, 'investigate', $2, $3, 'PENDING', $4, $4)`,
+			domain.NewJobID(), id, "handoff:"+string(domain.NewJobID()), at)
+		if err != nil {
+			return fmt.Errorf("enqueue specialist handoff: %w", err)
+		}
+		return nil
 	})
 }
 

@@ -107,6 +107,7 @@ type Investigation struct {
 	ModelProvider ModelProviderName   `json:"model_provider,omitempty"`
 	Model         string              `json:"model,omitempty"`
 	PromptVersion string              `json:"prompt_version"`
+	Specialist    SpecialistName      `json:"specialist,omitempty"`
 	Diagnosis     string              `json:"diagnosis,omitempty"`
 	Failure       string              `json:"failure,omitempty"`
 	CreatedAt     time.Time           `json:"created_at"`

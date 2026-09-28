@@ -42,7 +42,7 @@ func (s *Store) Overview(ctx context.Context) (admin.Overview, error) {
 
 func (s *Store) ListInvestigations(ctx context.Context, limit int) ([]admin.InvestigationSummary, error) {
 	rows, err := s.pool.Query(ctx, `SELECT i.id, i.ticket_id, i.status, i.model_provider, i.model,
-		i.prompt_version, i.diagnosis, i.failure, i.created_at, i.started_at, i.completed_at,
+		i.prompt_version, i.specialist, i.diagnosis, i.failure, i.created_at, i.started_at, i.completed_at,
 		t.source, t.external_id, t.summary, t.reporter_email
 		FROM investigations i JOIN tickets t ON t.id = i.ticket_id
 		ORDER BY i.created_at DESC, i.id DESC LIMIT $1`, limit)
@@ -54,7 +54,7 @@ func (s *Store) ListInvestigations(ctx context.Context, limit int) ([]admin.Inve
 	for rows.Next() {
 		var item admin.InvestigationSummary
 		if err := rows.Scan(&item.ID, &item.TicketID, &item.Status, &item.ModelProvider, &item.Model,
-			&item.PromptVersion, &item.Diagnosis, &item.Failure, &item.CreatedAt, &item.StartedAt,
+			&item.PromptVersion, &item.Specialist, &item.Diagnosis, &item.Failure, &item.CreatedAt, &item.StartedAt,
 			&item.CompletedAt, &item.Ticket.Source, &item.Ticket.ExternalID, &item.Ticket.Summary,
 			&item.Ticket.ReporterEmail); err != nil {
 			return nil, err

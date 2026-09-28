@@ -3,3 +3,14 @@ capabilities:
     mode: allow
   google.groups.add_member:
     mode: approval
+specialists:
+  - name: help_desk
+    instructions: Gather user-facing troubleshooting evidence.
+    collectors:
+      - google.users.get
+    handoff_to:
+      - access_management
+  - name: access_management
+    instructions: Investigate identity and entitlements.
+    capabilities:
+      - google.groups.add_member

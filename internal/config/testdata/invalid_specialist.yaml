@@ -1,0 +1,8 @@
+capabilities:
+  google.users.get:
+    mode: allow
+specialists:
+  - name: help_desk
+    instructions: Gather evidence.
+    handoff_to:
+      - missing_specialist

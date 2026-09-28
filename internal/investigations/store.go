@@ -36,11 +36,13 @@ type Store interface {
 	GetInvestigation(context.Context, domain.InvestigationID) (domain.Investigation, error)
 	GetTicket(context.Context, domain.InvestigationID) (domain.Ticket, error)
 	ListMessages(context.Context, domain.InvestigationID) ([]domain.CaseMessage, error)
+	Dispatch(context.Context, domain.InvestigationID, domain.SpecialistName, string, string, time.Time) error
 	StartInvestigation(context.Context, domain.InvestigationID, time.Time) error
 	RecordToolInvocations(context.Context, domain.InvestigationID, []ToolInvocation, time.Time) error
 	RecordEvidence(context.Context, domain.InvestigationID, []domain.Evidence, []CollectionFailure, time.Time) error
 	CompleteInvestigation(context.Context, domain.InvestigationID, string, domain.ModelProviderName, string, []ActionEvaluation, *domain.CaseMessage, time.Time) error
 	WaitForRequester(context.Context, domain.InvestigationID, domain.CaseMessage, time.Time) error
+	Handoff(context.Context, domain.InvestigationID, domain.SpecialistName, domain.SpecialistName, string, time.Time) error
 	ReceiveRequesterReply(context.Context, domain.ConnectorName, string, domain.CaseMessage, time.Time) (domain.InvestigationID, bool, error)
 	FailInvestigation(context.Context, domain.InvestigationID, string, time.Time) error
 	Timeline(context.Context, domain.InvestigationID) ([]audit.Event, error)

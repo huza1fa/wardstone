@@ -13,6 +13,8 @@ type Request struct {
 	Evidence        []domain.Evidence
 	Conversation    []domain.CaseMessage
 	Warnings        []string
+	Specialist      domain.SpecialistName `json:"specialist"`
+	Instructions    string                `json:"instructions"`
 }
 
 type ProposedAction struct {
@@ -26,6 +28,14 @@ type Result struct {
 	Diagnosis        string           `json:"diagnosis"`
 	FollowUpQuestion string           `json:"follow_up_question"`
 	Actions          []ProposedAction `json:"actions"`
+	Handoff          *Handoff         `json:"handoff,omitempty"`
+}
+
+// Handoff asks the deterministic runtime to resume the same durable case with
+// another installed specialist. It does not grant that specialist authority.
+type Handoff struct {
+	Specialist domain.SpecialistName `json:"specialist"`
+	Reason     string                `json:"reason"`
 }
 
 type ModelProvider interface {

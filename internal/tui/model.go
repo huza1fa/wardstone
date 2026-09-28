@@ -321,7 +321,11 @@ func (m Model) renderInvestigations(width, height int) string {
 	if detail == "" {
 		detail = "No diagnosis has been recorded yet."
 	}
-	detail = fmt.Sprintf("%s  %s\n%s", titleStyle.Render(shortID(string(selected.ID))), statusStyle(string(selected.Status)).Render(string(selected.Status)), truncate(detail, max(24, width-8)))
+	specialist := string(selected.Specialist)
+	if specialist == "" {
+		specialist = "unassigned"
+	}
+	detail = fmt.Sprintf("%s  %s  %s\n%s", titleStyle.Render(shortID(string(selected.ID))), statusStyle(string(selected.Status)).Render(string(selected.Status)), mutedStyle.Render(specialist), truncate(detail, max(24, width-8)))
 	return lipgloss.NewStyle().Padding(1).Render(strings.Join(lines, "\n") + "\n\n" + panelStyle.Width(max(20, width-6)).Render(detail))
 }
 
