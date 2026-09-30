@@ -25,6 +25,7 @@ const (
 	maxActionReasonSize     = 2000
 	defaultMaxHandoffs      = 3
 	defaultMaxFollowUps     = 3
+	minimumIntentConfidence = 0.75
 )
 
 type PolicyEvaluator interface {
@@ -48,6 +49,7 @@ type Config struct {
 	MaxFollowUpQuestions     int
 	DeliverRequesterMessages bool
 	Specialists              *specialists.Registry
+	RoutingRules             []specialists.RouteRule
 }
 
 type Service struct {
@@ -84,7 +86,7 @@ func NewService(store Store, collectors []connectors.EvidenceCollector, model ag
 	if config.MaxHandoffs < 1 || config.MaxFollowUpQuestions < 1 {
 		return nil, errors.New("handoff and follow-up question limits must be positive")
 	}
-	dispatcher, err := specialists.NewDispatcher(config.Specialists)
+	dispatcher, err := specialists.NewDispatcherWithRules(config.Specialists, config.RoutingRules)
 	if err != nil {
 		return nil, fmt.Errorf("create dispatcher: %w", err)
 	}
@@ -171,6 +173,9 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 	}
 	if existing.Specialist == "" {
 		decision := s.dispatcher.Dispatch(ticket)
+		if decision.NeedsIntent {
+			decision = s.classifyIntent(ctx, ticket, decision)
+		}
 		if err := s.store.Dispatch(ctx, id, decision.Specialist, decision.Classification, decision.Reason, s.clock.Now()); err != nil {
 			return fmt.Errorf("dispatch investigation: %w", err)
 		}
@@ -375,6 +380,51 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 		return fmt.Errorf("complete investigation: %w", err)
 	}
 	return nil
+}
+
+// classifyIntent is intentionally an availability-preserving refinement of
+// the deterministic dispatcher. A missing, failed, malformed, low-confidence,
+// or out-of-policy model answer keeps the ticket with Help Desk. It never
+// grants capabilities; the selected profile's allowlists remain in force.
+func (s *Service) classifyIntent(ctx context.Context, ticket domain.Ticket, fallback specialists.Decision) specialists.Decision {
+	classifier, ok := s.model.(agent.IntentClassifier)
+	if !ok {
+		return fallback
+	}
+	candidates := s.dispatcher.Candidates()
+	request := agent.IntentRequest{Ticket: ticket, Candidates: make([]agent.IntentCandidate, 0, len(candidates))}
+	allowed := make(map[domain.SpecialistName]struct{}, len(candidates))
+	for _, name := range candidates {
+		profile, exists := s.specialists.Get(name)
+		if !exists {
+			continue
+		}
+		request.Candidates = append(request.Candidates, agent.IntentCandidate{
+			Specialist: name, Classification: string(name), Description: boundedString(profile.Instructions, 2000),
+		})
+		allowed[name] = struct{}{}
+	}
+	modelCtx, cancel := context.WithTimeout(ctx, s.config.ModelTimeout)
+	result, err := classifier.ClassifyIntent(modelCtx, request)
+	cancel()
+	if err != nil || result.Confidence < minimumIntentConfidence || result.Confidence > 1 ||
+		strings.TrimSpace(result.Reason) == "" || len(result.Reason) > maxActionReasonSize {
+		return fallback
+	}
+	if _, ok := allowed[result.Specialist]; !ok || result.Classification != string(result.Specialist) {
+		return fallback
+	}
+	return specialists.Decision{
+		Specialist: result.Specialist, Classification: result.Classification,
+		Reason: "model intent classification: " + result.Reason,
+	}
+}
+
+func boundedString(value string, limit int) string {
+	if len(value) > limit {
+		return value[:limit]
+	}
+	return value
 }
 
 func (s *Service) checkLimit(ctx context.Context, id domain.InvestigationID, eventType audit.EventType, limit int, name string) error {

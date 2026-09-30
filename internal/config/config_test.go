@@ -22,6 +22,9 @@ func TestLoadPolicy(t *testing.T) {
 	if len(config.Specialists) != 2 || config.Specialists[0].Name != "help_desk" {
 		t.Fatalf("specialists = %+v", config.Specialists)
 	}
+	if len(config.RoutingRules) != 1 || config.RoutingRules[0].Specialist != "access_management" {
+		t.Fatalf("routing rules = %+v", config.RoutingRules)
+	}
 }
 
 func TestLoadPolicyRejectsUnknownMode(t *testing.T) {

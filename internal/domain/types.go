@@ -84,18 +84,54 @@ const (
 )
 
 type Ticket struct {
-	ID            TicketID      `json:"id"`
-	Source        ConnectorName `json:"source"`
-	ExternalID    string        `json:"external_id"`
-	Summary       string        `json:"summary"`
-	Description   string        `json:"description"`
-	ReporterEmail string        `json:"reporter_email,omitempty"`
-	CreatedAt     time.Time     `json:"created_at"`
+	ID            TicketID       `json:"id"`
+	Source        ConnectorName  `json:"source"`
+	ExternalID    string         `json:"external_id"`
+	Summary       string         `json:"summary"`
+	Description   string         `json:"description"`
+	ReporterEmail string         `json:"reporter_email,omitempty"`
+	Metadata      TicketMetadata `json:"metadata,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+}
+
+// TicketMetadata contains connector-owned routing signals. It is kept
+// separate from the free-text ticket body so deterministic routing can prefer
+// administrator-configured Jira fields before consulting a model.
+type TicketMetadata struct {
+	IssueType   string              `json:"issue_type,omitempty"`
+	RequestType string              `json:"request_type,omitempty"`
+	Components  []string            `json:"components,omitempty"`
+	Labels      []string            `json:"labels,omitempty"`
+	Fields      map[string][]string `json:"fields,omitempty"`
 }
 
 func (t Ticket) Validate() error {
 	if t.ID == "" || t.Source == "" || t.ExternalID == "" || t.Summary == "" {
 		return errors.New("ticket ID, source, external ID, and summary are required")
+	}
+	return t.Metadata.Validate()
+}
+
+func (m TicketMetadata) Validate() error {
+	if len(m.IssueType) > 256 || len(m.RequestType) > 256 || len(m.Components) > 64 || len(m.Labels) > 64 || len(m.Fields) > 64 {
+		return errors.New("ticket metadata exceeds routing field limits")
+	}
+	for _, values := range [][]string{m.Components, m.Labels} {
+		for _, value := range values {
+			if len(value) > 256 {
+				return errors.New("ticket metadata values must be at most 256 bytes")
+			}
+		}
+	}
+	for field, values := range m.Fields {
+		if field == "" || len(field) > 128 || len(values) == 0 || len(values) > 32 {
+			return errors.New("ticket metadata fields must have a bounded name and values")
+		}
+		for _, value := range values {
+			if len(value) > 512 {
+				return errors.New("ticket metadata field values must be at most 512 bytes")
+			}
+		}
 	}
 	return nil
 }

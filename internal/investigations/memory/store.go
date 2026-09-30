@@ -461,7 +461,18 @@ func (s *Store) appendEvent(id domain.InvestigationID, eventType audit.EventType
 	})
 }
 
-func cloneTicket(ticket domain.Ticket) domain.Ticket { return ticket }
+func cloneTicket(ticket domain.Ticket) domain.Ticket {
+	ticket.Metadata.Components = append([]string(nil), ticket.Metadata.Components...)
+	ticket.Metadata.Labels = append([]string(nil), ticket.Metadata.Labels...)
+	if len(ticket.Metadata.Fields) != 0 {
+		fields := make(map[string][]string, len(ticket.Metadata.Fields))
+		for key, values := range ticket.Metadata.Fields {
+			fields[key] = append([]string(nil), values...)
+		}
+		ticket.Metadata.Fields = fields
+	}
+	return ticket
+}
 
 func cloneEvaluation(item investigations.ActionEvaluation) investigations.ActionEvaluation {
 	item.Action.Arguments = append(json.RawMessage(nil), item.Action.Arguments...)

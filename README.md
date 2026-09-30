@@ -83,6 +83,11 @@ The priority order is:
 4. Data classification, model-routing controls, approval/execution, and a
    transactional delivery layer for Jira and Slack.
 
+Ticket routing is deterministic-first: ordered rules use selected Jira fields
+before Wardstone asks a model for a confidence-gated intent classification.
+The model can choose only an installed specialist profile and does not receive
+any permission to act. See the example policy and [development setup](docs/development.md#jira-ticket-routing-metadata).
+
 We will not spend the MVP on a generic chat interface, unbounded autonomous
 execution, or a large catalog of shallow one-off automations. The useful unit
 is a durable case with clear context, a narrow job to do, evidence, and an

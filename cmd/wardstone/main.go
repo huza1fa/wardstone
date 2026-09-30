@@ -99,6 +99,7 @@ func run(logger *slog.Logger) error {
 		MaxFollowUpQuestions:     settings.MaxFollowUpQuestions,
 		DeliverRequesterMessages: settings.Mode != domain.OperatingModeShadow,
 		Specialists:              specialistRegistry,
+		RoutingRules:             settings.RoutingRules,
 	})
 	if err != nil {
 		return err

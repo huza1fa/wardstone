@@ -28,10 +28,14 @@ func (s *Store) ReceiveTicket(ctx context.Context, ticket domain.Ticket, investi
 		return "", false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	metadata, err := json.Marshal(ticket.Metadata)
+	if err != nil {
+		return "", false, fmt.Errorf("encode ticket metadata: %w", err)
+	}
 	command, err := tx.Exec(ctx, `INSERT INTO tickets
-		(id, source, external_id, summary, description, reporter_email, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (source, external_id) DO NOTHING`,
-		ticket.ID, ticket.Source, ticket.ExternalID, ticket.Summary, ticket.Description, ticket.ReporterEmail, ticket.CreatedAt)
+		(id, source, external_id, summary, description, reporter_email, metadata, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (source, external_id) DO NOTHING`,
+		ticket.ID, ticket.Source, ticket.ExternalID, ticket.Summary, ticket.Description, ticket.ReporterEmail, metadata, ticket.CreatedAt)
 	if err != nil {
 		return "", false, fmt.Errorf("insert ticket: %w", err)
 	}
@@ -111,13 +115,20 @@ func (s *Store) Dispatch(ctx context.Context, id domain.InvestigationID, special
 
 func (s *Store) GetTicket(ctx context.Context, id domain.InvestigationID) (domain.Ticket, error) {
 	var ticket domain.Ticket
+	var metadata []byte
 	err := s.pool.QueryRow(ctx, `SELECT t.id, t.source, t.external_id, t.summary, t.description,
-		t.reporter_email, t.created_at FROM tickets t JOIN investigations i ON i.ticket_id = t.id WHERE i.id = $1`, id).Scan(
-		&ticket.ID, &ticket.Source, &ticket.ExternalID, &ticket.Summary, &ticket.Description, &ticket.ReporterEmail, &ticket.CreatedAt)
+		t.reporter_email, t.metadata, t.created_at FROM tickets t JOIN investigations i ON i.ticket_id = t.id WHERE i.id = $1`, id).Scan(
+		&ticket.ID, &ticket.Source, &ticket.ExternalID, &ticket.Summary, &ticket.Description, &ticket.ReporterEmail, &metadata, &ticket.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Ticket{}, investigations.ErrNotFound
 	}
-	return ticket, err
+	if err != nil {
+		return domain.Ticket{}, err
+	}
+	if err := json.Unmarshal(metadata, &ticket.Metadata); err != nil {
+		return domain.Ticket{}, fmt.Errorf("decode ticket metadata: %w", err)
+	}
+	return ticket, nil
 }
 
 func (s *Store) ListMessages(ctx context.Context, id domain.InvestigationID) ([]domain.CaseMessage, error) {

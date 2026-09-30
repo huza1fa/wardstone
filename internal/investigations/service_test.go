@@ -86,6 +86,68 @@ func TestInvestigationCompletesWithPartialEvidenceAndShadowDecision(t *testing.T
 	}
 }
 
+func TestAmbiguousTicketUsesHighConfidenceIntentWithinInstalledProfiles(t *testing.T) {
+	t.Parallel()
+	store := memory.NewStore()
+	registry := registryForTest(t)
+	model := intentModel{
+		classify: func(_ context.Context, request agent.IntentRequest) (agent.IntentResult, error) {
+			if len(request.Candidates) != 2 {
+				t.Fatalf("intent candidates = %+v", request.Candidates)
+			}
+			return agent.IntentResult{
+				Specialist: specialists.AccessManagement, Classification: "access_management", Confidence: 0.9,
+				Reason: "The request is for a role assignment.",
+			}, nil
+		},
+		diagnose: func(_ context.Context, request agent.Request) (agent.Result, error) {
+			if request.Specialist != specialists.AccessManagement {
+				t.Fatalf("specialist = %q, want access_management", request.Specialist)
+			}
+			return agent.Result{Diagnosis: "Access request is ready for review."}, nil
+		},
+	}
+	service := newService(t, store, nil, model, registry, 1)
+	id, _, err := service.Receive(context.Background(), domain.Ticket{
+		Source: "jira", ExternalID: "JIRA-INTENT-1", Summary: "Please add the correct role for my new project", ReporterEmail: "jane@example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Run(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.GetInvestigation(context.Background(), id)
+	if err != nil || item.Specialist != specialists.AccessManagement || item.Status != domain.InvestigationCompleted {
+		t.Fatalf("investigation = %+v, err = %v", item, err)
+	}
+}
+
+func TestLowConfidenceIntentSafelyFallsBackToHelpDesk(t *testing.T) {
+	t.Parallel()
+	store := memory.NewStore()
+	registry := registryForTest(t)
+	model := intentModel{
+		classify: func(context.Context, agent.IntentRequest) (agent.IntentResult, error) {
+			return agent.IntentResult{Specialist: specialists.AccessManagement, Classification: "access_management", Confidence: 0.2, Reason: "Unsure."}, nil
+		},
+		diagnose: func(_ context.Context, request agent.Request) (agent.Result, error) {
+			if request.Specialist != specialists.HelpDesk {
+				t.Fatalf("specialist = %q, want help_desk", request.Specialist)
+			}
+			return agent.Result{Diagnosis: "Need more information."}, nil
+		},
+	}
+	service := newService(t, store, nil, model, registry, 1)
+	id, _, err := service.Receive(context.Background(), domain.Ticket{Source: "jira", ExternalID: "JIRA-INTENT-2", Summary: "Something is wrong", ReporterEmail: "jane@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Run(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEvidenceCollectionUsesBoundedConcurrency(t *testing.T) {
 	t.Parallel()
 	started := make(chan int, 3)
@@ -569,6 +631,20 @@ func (modelFunc) Name() domain.ModelProviderName { return "fake" }
 func (modelFunc) Model() string                  { return "fake-v1" }
 func (f modelFunc) Diagnose(ctx context.Context, request agent.Request) (agent.Result, error) {
 	return f(ctx, request)
+}
+
+type intentModel struct {
+	diagnose func(context.Context, agent.Request) (agent.Result, error)
+	classify func(context.Context, agent.IntentRequest) (agent.IntentResult, error)
+}
+
+func (intentModel) Name() domain.ModelProviderName { return "fake" }
+func (intentModel) Model() string                  { return "fake-v1" }
+func (m intentModel) Diagnose(ctx context.Context, request agent.Request) (agent.Result, error) {
+	return m.diagnose(ctx, request)
+}
+func (m intentModel) ClassifyIntent(ctx context.Context, request agent.IntentRequest) (agent.IntentResult, error) {
+	return m.classify(ctx, request)
 }
 
 func noActionDiagnosis(context.Context, agent.Request) (agent.Result, error) {

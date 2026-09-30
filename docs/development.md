@@ -17,7 +17,7 @@ explicitly, for example:
 
 ```sh
 docker compose exec -T postgres psql -U wardstone_admin -d wardstone \
-  < migrations/000004_jira_delivery_outbox.sql
+  < migrations/000006_ticket_routing_metadata.sql
 ```
 
 Never reapply a migration whose version already appears in
@@ -32,6 +32,11 @@ and explicit handoff targets. The supplied configuration enables Help Desk and
 Access Management; follow its structure when adding a specialist. A profile
 never grants execution authority—every proposal still passes deterministic
 capability validation and policy.
+
+The example policy includes Help Desk, Access Management, Vendor Review, and
+Systems Knowledge profiles. Vendor Review and Systems Knowledge intentionally
+have no connector permissions until their bounded, read-only evidence adapters
+are configured; defining a profile alone does not create access.
 
 ## Checks
 
@@ -80,6 +85,33 @@ Do not reuse the outbound Jira API token as the inbound webhook secret.
 SHADOW mode stores model-generated questions and results as operator-visible
 drafts only. It does not call Jira or require **Add comments** permission. The
 delivery outbox is reserved for a future operator-reviewed sending workflow.
+
+## Jira ticket routing metadata
+
+Jira Automation should send a small, flattened routing subset with each ticket.
+Wardstone evaluates configured `routing.rules` against `issue_type`,
+`request_type`, `components`, `labels`, and selected `fields` before it makes
+an intent-classification model call. The fields map is intentionally an
+allowlisted automation output, not a raw Jira issue payload.
+
+```json
+{
+  "external_id": "HELP-42",
+  "summary": "Review Acme's security posture",
+  "description": "Procurement needs a recommendation.",
+  "reporter_email": "operator@example.com",
+  "issue_type": "Service Request",
+  "labels": ["vendor"],
+  "fields": {"Review type": ["Security"]}
+}
+```
+
+Rules are ordered. Values within one selector are alternatives; selectors in a
+rule are all required. If no deterministic route matches, an available model
+may select only from installed specialist profiles and must return at least
+0.75 confidence. Any unavailable, invalid, or low-confidence classification
+safely remains with `help_desk`, where the existing durable follow-up workflow
+can collect the missing fact.
 
 ## Requester replies
 

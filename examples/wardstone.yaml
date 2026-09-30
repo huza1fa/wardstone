@@ -32,3 +32,39 @@ specialists:
     capabilities:
       - google.groups.add_member
       - google.groups.remove_member
+  - name: vendor_review
+    instructions: >-
+      Prepare bounded, evidence-backed vendor security and risk reviews.
+      Do not infer contractual or legal approval, and ask for a specific
+      missing vendor artifact when the requester can provide it.
+    handoff_to:
+      - help_desk
+  - name: systems_knowledge
+    instructions: >-
+      Answer systems and internal-documentation questions from configured
+      read-only evidence, and identify when an operator must supply context.
+    handoff_to:
+      - help_desk
+
+routing:
+  # Rules run in order and inspect structured Jira fields before any model
+  # intent classification. Configure these values to match your Jira project.
+  rules:
+    - name: jira-access-request
+      specialist: access_management
+      classification: access_management
+      match:
+        request_types: [Access request]
+    - name: jira-vendor-security-review
+      specialist: vendor_review
+      classification: vendor_review
+      match:
+        issue_types: [Service Request]
+        labels: [vendor]
+        fields:
+          Review type: [Security]
+    - name: jira-systems-question
+      specialist: systems_knowledge
+      classification: systems_knowledge
+      match:
+        components: [Internal Systems]

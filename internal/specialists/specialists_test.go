@@ -27,6 +27,55 @@ func TestDispatcherRoutesAccessTermsAndFallsBackToHelpDesk(t *testing.T) {
 	}
 }
 
+func TestDispatcherPrefersStructuredJiraRoutingRules(t *testing.T) {
+	t.Parallel()
+	registry, err := NewRegistry(
+		Profile{Name: HelpDesk, Instructions: "Help users."},
+		Profile{Name: VendorReview, Instructions: "Review vendors."},
+		Profile{Name: AccessManagement, Instructions: "Investigate access."},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher, err := NewDispatcherWithRules(registry, []RouteRule{{
+		Name: "vendor-security-review", Specialist: VendorReview, Classification: "vendor_review",
+		Match: RouteMatch{IssueTypes: []string{"Service Request"}, Labels: []string{"vendor"}, Fields: map[string][]string{"Review type": {"Security"}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := dispatcher.Dispatch(domain.Ticket{
+		Summary: "Need access to a vendor portal", // Keyword routing must not override authoritative Jira fields.
+		Metadata: TicketMetadataForTest(),
+	})
+	if decision.Specialist != VendorReview || decision.Classification != "vendor_review" || decision.NeedsIntent {
+		t.Fatalf("decision = %+v", decision)
+	}
+}
+
+func TestDispatcherMarksUnknownTicketsForOptionalIntentClassification(t *testing.T) {
+	t.Parallel()
+	registry, err := NewRegistry(Profile{Name: HelpDesk, Instructions: "Help users."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher, err := NewDispatcher(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := dispatcher.Dispatch(domain.Ticket{Summary: "My workstation feels strange"})
+	if decision.Specialist != HelpDesk || !decision.NeedsIntent {
+		t.Fatalf("decision = %+v", decision)
+	}
+}
+
+func TicketMetadataForTest() domain.TicketMetadata {
+	return domain.TicketMetadata{
+		IssueType: "service request", Labels: []string{"Vendor"},
+		Fields: map[string][]string{"review type": {"security"}},
+	}
+}
+
 func TestRegistryCopiesProfileSlices(t *testing.T) {
 	t.Parallel()
 	collectors := []domain.CapabilityName{"directory.user.get"}

@@ -43,3 +43,29 @@ type ModelProvider interface {
 	Model() string
 	Diagnose(context.Context, Request) (Result, error)
 }
+
+// IntentClassifier is deliberately narrower than ModelProvider. The runtime
+// uses it only after deterministic connector-field routing has no match. Its
+// result selects from installed candidates; it cannot attach tools, actions,
+// or authority to a ticket.
+type IntentClassifier interface {
+	ClassifyIntent(context.Context, IntentRequest) (IntentResult, error)
+}
+
+type IntentRequest struct {
+	Ticket     domain.Ticket     `json:"ticket"`
+	Candidates []IntentCandidate `json:"candidates"`
+}
+
+type IntentCandidate struct {
+	Specialist     domain.SpecialistName `json:"specialist"`
+	Classification string                `json:"classification"`
+	Description    string                `json:"description"`
+}
+
+type IntentResult struct {
+	Specialist     domain.SpecialistName `json:"specialist"`
+	Classification string                `json:"classification"`
+	Confidence     float64               `json:"confidence"`
+	Reason         string                `json:"reason"`
+}

@@ -39,6 +39,7 @@ type Config struct {
 	OpenAIModel          string
 	PolicyRules          map[domain.CapabilityName]policy.RuleMode
 	Specialists          []specialists.Profile
+	RoutingRules         []specialists.RouteRule
 }
 
 func Load() (Config, error) {
@@ -118,6 +119,9 @@ func loadPolicy(path string, config *Config) error {
 			Capabilities []domain.CapabilityName `yaml:"capabilities"`
 			HandoffTo    []domain.SpecialistName `yaml:"handoff_to"`
 		} `yaml:"specialists"`
+		Routing struct {
+			Rules []specialists.RouteRule `yaml:"rules"`
+		} `yaml:"routing"`
 	}
 	decoder := yaml.NewDecoder(io.LimitReader(file, 1<<20))
 	decoder.KnownFields(true)
@@ -157,10 +161,11 @@ func loadPolicy(path string, config *Config) error {
 	if err != nil {
 		return fmt.Errorf("specialists: %w", err)
 	}
-	if _, err := specialists.NewDispatcher(registry); err != nil {
+	if _, err := specialists.NewDispatcherWithRules(registry, raw.Routing.Rules); err != nil {
 		return fmt.Errorf("specialists: %w", err)
 	}
 	config.Specialists = profiles
+	config.RoutingRules = append([]specialists.RouteRule(nil), raw.Routing.Rules...)
 	return nil
 }
 

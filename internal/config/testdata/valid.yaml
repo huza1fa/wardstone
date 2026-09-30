@@ -14,3 +14,10 @@ specialists:
     instructions: Investigate identity and entitlements.
     capabilities:
       - google.groups.add_member
+routing:
+  rules:
+    - name: access-request
+      specialist: access_management
+      classification: access_management
+      match:
+        request_types: [Access request]
