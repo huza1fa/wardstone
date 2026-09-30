@@ -18,9 +18,10 @@
         <span><strong>Wardstone</strong><small>Control plane</small></span>
       </a>
       <nav aria-label="Admin navigation">
-        <a class="nav-item active" href="#overview"><span aria-hidden="true">⌂</span>Overview</a>
-        <a class="nav-item" href="#approvals"><span aria-hidden="true">✓</span>Approvals <span id="approval-badge" class="nav-badge" hidden>0</span></a>
-        <a class="nav-item" href="#investigations"><span aria-hidden="true">⌕</span>Investigations</a>
+        <a class="nav-item active" href="#overview" aria-label="Overview"><span aria-hidden="true">⌂</span><span>Overview</span></a>
+        <a class="nav-item" href="#approvals" aria-label="Approvals"><span aria-hidden="true">✓</span><span>Approvals</span> <span id="approval-badge" class="nav-badge" hidden>0</span></a>
+        <a class="nav-item" href="#investigations" aria-label="Investigations"><span aria-hidden="true">⌕</span><span>Investigations</span></a>
+        <a class="nav-item" href="#routing-preview" aria-label="Routing preview"><span aria-hidden="true">⇢</span><span>Routing preview</span></a>
       </nav>
       <div class="sidebar-foot">
         <div class="service-state"><span id="health-dot" class="health-dot"></span><span><strong id="health-label">Checking service</strong><small id="last-updated">Not connected</small></span></div>
@@ -89,6 +90,30 @@
               <tbody id="investigation-list"></tbody>
             </table>
             <div id="investigation-empty" class="empty-state" hidden><span aria-hidden="true">◇</span><h3>No investigations yet</h3><p>New Jira work will appear here after it is ingested.</p></div>
+          </div>
+        </section>
+        <section id="routing-preview" aria-labelledby="routing-preview-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">Ticket classification</p><h2 id="routing-preview-title">Routing preview</h2></div>
+            <span class="section-note">Read only</span>
+          </div>
+          <div class="routing-panel">
+            <p class="routing-copy" id="routing-preview-help">Test Jira fields against the current routing rules. The preview shows the initial specialist or fallback and does not create a ticket or call a model.</p>
+            <form id="routing-preview-form">
+              <label for="routing-payload">Jira ticket payload</label>
+              <textarea id="routing-payload" rows="13" required spellcheck="false" aria-describedby="routing-preview-help" maxlength="1048576">{
+  "external_id": "PREVIEW-1",
+  "summary": "Review a new vendor",
+  "description": "Evaluate the vendor before onboarding.",
+  "issue_type": "Service Request",
+  "request_type": "Vendor review",
+  "labels": ["vendor"],
+  "fields": {"Review type": ["Security"]}
+}</textarea>
+              <div class="routing-actions"><button id="routing-preview-submit" class="button" type="submit">Preview routing</button></div>
+              <p id="routing-preview-error" class="form-error" role="alert"></p>
+            </form>
+            <div id="routing-preview-result" aria-live="polite"></div>
           </div>
         </section>
       </div>

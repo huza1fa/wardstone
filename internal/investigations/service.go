@@ -2,10 +2,13 @@ package investigations
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sync/errgroup"
 
@@ -25,7 +28,7 @@ const (
 	maxActionReasonSize     = 2000
 	defaultMaxHandoffs      = 3
 	defaultMaxFollowUps     = 3
-	minimumIntentConfidence = 0.75
+	maxIntentInputBytes     = 64 << 10
 )
 
 type PolicyEvaluator interface {
@@ -50,6 +53,7 @@ type Config struct {
 	DeliverRequesterMessages bool
 	Specialists              *specialists.Registry
 	RoutingRules             []specialists.RouteRule
+	IntentClassification     *specialists.IntentConfig
 }
 
 type Service struct {
@@ -62,6 +66,8 @@ type Service struct {
 	clock       Clock
 	specialists *specialists.Registry
 	dispatcher  *specialists.Dispatcher
+	intent      specialists.IntentConfig
+	candidates  []agent.IntentCandidate
 }
 
 func NewService(store Store, collectors []connectors.EvidenceCollector, model agent.ModelProvider, registry *capabilities.Registry, policy PolicyEvaluator, config Config) (*Service, error) {
@@ -77,6 +83,12 @@ func NewService(store Store, collectors []connectors.EvidenceCollector, model ag
 	if config.PromptVersion == "" {
 		return nil, errors.New("prompt version is required")
 	}
+	confidence := 1.0
+	if err := (domain.RoutingDecision{Specialist: specialists.HelpDesk, Classification: "help_desk",
+		Source: domain.RoutingSourceModel, Reason: "validate model identity", Confidence: &confidence,
+		ModelProvider: model.Name(), Model: model.Model()}).Validate(); err != nil {
+		return nil, fmt.Errorf("model identity: %w", err)
+	}
 	if config.MaxHandoffs == 0 {
 		config.MaxHandoffs = defaultMaxHandoffs
 	}
@@ -89,6 +101,20 @@ func NewService(store Store, collectors []connectors.EvidenceCollector, model ag
 	dispatcher, err := specialists.NewDispatcherWithRules(config.Specialists, config.RoutingRules)
 	if err != nil {
 		return nil, fmt.Errorf("create dispatcher: %w", err)
+	}
+	intent := specialists.DefaultIntentConfig()
+	if config.IntentClassification != nil {
+		intent = *config.IntentClassification
+	}
+	if err := intent.Validate(); err != nil {
+		return nil, fmt.Errorf("intent classification: %w", err)
+	}
+	candidates := make([]agent.IntentCandidate, 0, len(config.Specialists.Profiles()))
+	for _, name := range dispatcher.Candidates() {
+		profile, _ := config.Specialists.Get(name)
+		candidates = append(candidates, agent.IntentCandidate{
+			Specialist: name, Classification: string(name), Description: boundedString(profile.Instructions, 2000),
+		})
 	}
 	for _, profile := range config.Specialists.Profiles() {
 		for _, name := range profile.AllowedCollectors {
@@ -109,7 +135,7 @@ func NewService(store Store, collectors []connectors.EvidenceCollector, model ag
 	return &Service{
 		store: store, collectors: append([]connectors.EvidenceCollector(nil), collectors...),
 		model: model, registry: registry, policy: policy, config: config, clock: realClock{},
-		specialists: config.Specialists, dispatcher: dispatcher,
+		specialists: config.Specialists, dispatcher: dispatcher, intent: intent, candidates: candidates,
 	}, nil
 }
 
@@ -173,10 +199,16 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 	}
 	if existing.Specialist == "" {
 		decision := s.dispatcher.Dispatch(ticket)
-		if decision.NeedsIntent {
-			decision = s.classifyIntent(ctx, ticket, decision)
+		if decision.Source == domain.RoutingSourceFallback {
+			decision, err = s.classifyIntent(ctx, ticket, decision)
+			if err != nil {
+				return fmt.Errorf("classify ticket intent: %w", err)
+			}
 		}
-		if err := s.store.Dispatch(ctx, id, decision.Specialist, decision.Classification, decision.Reason, s.clock.Now()); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.store.Dispatch(ctx, id, decision, s.clock.Now()); err != nil {
 			return fmt.Errorf("dispatch investigation: %w", err)
 		}
 		existing.Specialist = decision.Specialist
@@ -386,42 +418,96 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 // the deterministic dispatcher. A missing, failed, malformed, low-confidence,
 // or out-of-policy model answer keeps the ticket with Help Desk. It never
 // grants capabilities; the selected profile's allowlists remain in force.
-func (s *Service) classifyIntent(ctx context.Context, ticket domain.Ticket, fallback specialists.Decision) specialists.Decision {
+func (s *Service) classifyIntent(ctx context.Context, ticket domain.Ticket, fallback domain.RoutingDecision) (domain.RoutingDecision, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.RoutingDecision{}, err
+	}
+	if !s.intent.Enabled {
+		return intentFallback(fallback, "intent_disabled", "Intent classification is disabled; Help Desk will clarify the request."), nil
+	}
 	classifier, ok := s.model.(agent.IntentClassifier)
 	if !ok {
-		return fallback
+		return intentFallback(fallback, "classifier_unavailable", "The model has no intent classifier; Help Desk will clarify the request."), nil
 	}
-	candidates := s.dispatcher.Candidates()
-	request := agent.IntentRequest{Ticket: ticket, Candidates: make([]agent.IntentCandidate, 0, len(candidates))}
-	allowed := make(map[domain.SpecialistName]struct{}, len(candidates))
-	for _, name := range candidates {
-		profile, exists := s.specialists.Get(name)
-		if !exists {
-			continue
-		}
-		request.Candidates = append(request.Candidates, agent.IntentCandidate{
-			Specialist: name, Classification: string(name), Description: boundedString(profile.Instructions, 2000),
-		})
-		allowed[name] = struct{}{}
+	// Intent routing needs the request's content, not the reporter's identity or
+	// internal case identifiers. Copy mutable metadata and candidates before
+	// handing them to a provider, which may retain or modify its request.
+	request := agent.IntentRequest{
+		Ticket: domain.Ticket{Source: ticket.Source, Summary: boundedString(ticket.Summary, 8<<10),
+			Description: boundedString(ticket.Description, 16<<10), Metadata: ticket.Metadata.Clone()},
+		Candidates: append([]agent.IntentCandidate(nil), s.candidates...),
 	}
-	modelCtx, cancel := context.WithTimeout(ctx, s.config.ModelTimeout)
+	input, err := json.Marshal(request)
+	if err != nil || len(input) > maxIntentInputBytes {
+		return intentFallback(fallback, "intent_input_too_large", "The routing input exceeds the model budget; Help Desk will clarify the request."), nil
+	}
+	fallback.ModelProvider, fallback.Model = s.model.Name(), s.model.Model()
+	modelCtx, cancel := context.WithTimeout(ctx, s.intent.Timeout)
 	result, err := classifier.ClassifyIntent(modelCtx, request)
+	callErr := modelCtx.Err()
 	cancel()
-	if err != nil || result.Confidence < minimumIntentConfidence || result.Confidence > 1 ||
-		strings.TrimSpace(result.Reason) == "" || len(result.Reason) > maxActionReasonSize {
-		return fallback
+	if err := ctx.Err(); err != nil {
+		return domain.RoutingDecision{}, err
 	}
-	if _, ok := allowed[result.Specialist]; !ok || result.Classification != string(result.Specialist) {
-		return fallback
+	if errors.Is(callErr, context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return intentFallback(fallback, "classifier_timeout", "Intent classification timed out; Help Desk will clarify the request."), nil
 	}
-	return specialists.Decision{
-		Specialist: result.Specialist, Classification: result.Classification,
-		Reason: "model intent classification: " + result.Reason,
+	if err != nil {
+		return intentFallback(fallback, "classifier_failed", "Intent classification failed; Help Desk will clarify the request."), nil
 	}
+	if math.IsNaN(result.Confidence) || math.IsInf(result.Confidence, 0) || result.Confidence < 0 || result.Confidence > 1 ||
+		strings.TrimSpace(result.Reason) == "" || len(result.Reason) > maxActionReasonSize || !utf8.ValidString(result.Reason) {
+		return intentFallback(fallback, "invalid_intent", "The model returned an invalid intent decision; Help Desk will clarify the request."), nil
+	}
+	if _, ok := s.specialists.Get(result.Specialist); !ok || result.Classification != string(result.Specialist) {
+		return intentFallback(fallback, "invalid_intent", "The model selected an unknown role or classification; Help Desk will clarify the request."), nil
+	}
+	decision := domain.RoutingDecision{
+		Specialist: result.Specialist, Classification: result.Classification, Source: domain.RoutingSourceModel,
+		Reason: result.Reason, Confidence: &result.Confidence, ModelProvider: s.model.Name(), Model: s.model.Model(),
+	}
+	if err := decision.Validate(); err != nil {
+		return intentFallback(fallback, "invalid_intent", "The model returned an invalid intent decision; Help Desk will clarify the request."), nil
+	}
+	if result.Confidence < s.intent.MinConfidence {
+		fallback.Confidence = &result.Confidence
+		return intentFallback(fallback, "low_confidence", "The model could not classify the request confidently; Help Desk will clarify the request."), nil
+	}
+	return decision, nil
+}
+
+func intentFallback(decision domain.RoutingDecision, code, reason string) domain.RoutingDecision {
+	decision.FallbackCode, decision.Reason = code, reason
+	return decision
+}
+
+// PreviewRouting evaluates administrator routing rules without invoking a
+// model or creating a case. Operators can check Jira mappings before intake.
+func (s *Service) PreviewRouting(ctx context.Context, ticket domain.Ticket) (domain.RoutingDecision, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.RoutingDecision{}, err
+	}
+	if err := ticket.Validate(); err != nil {
+		return domain.RoutingDecision{}, err
+	}
+	decision := s.dispatcher.Dispatch(ticket)
+	if decision.Source == domain.RoutingSourceFallback {
+		if !s.intent.Enabled {
+			return intentFallback(decision, "intent_disabled", "No rule matched. Intent classification is disabled; intake will assign Help Desk."), nil
+		}
+		if _, ok := s.model.(agent.IntentClassifier); !ok {
+			return intentFallback(decision, "classifier_unavailable", "No rule matched and the model has no intent classifier; intake will assign Help Desk."), nil
+		}
+		decision.Reason = "No rule matched. Intake will attempt intent classification before falling back to Help Desk; this preview does not call the model."
+	}
+	return decision, nil
 }
 
 func boundedString(value string, limit int) string {
 	if len(value) > limit {
+		for limit > 0 && !utf8.RuneStart(value[limit]) {
+			limit--
+		}
 		return value[:limit]
 	}
 	return value

@@ -1,10 +1,15 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/wardstone-project/wardstone/internal/domain"
 	"github.com/wardstone-project/wardstone/internal/policy"
+	"github.com/wardstone-project/wardstone/internal/specialists"
 )
 
 func TestLoadPolicy(t *testing.T) {
@@ -25,6 +30,106 @@ func TestLoadPolicy(t *testing.T) {
 	if len(config.RoutingRules) != 1 || config.RoutingRules[0].Specialist != "access_management" {
 		t.Fatalf("routing rules = %+v", config.RoutingRules)
 	}
+}
+
+func TestIntentConfigurationDefaultsAndOverrides(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		routing string
+		want    specialists.IntentConfig
+	}{
+		{"omitted", "", specialists.DefaultIntentConfig()},
+		{"disabled", "routing:\n  intent:\n    enabled: false\n", specialists.IntentConfig{Enabled: false, MinConfidence: 0.75, Timeout: 10 * time.Second}},
+		{"partial", "routing:\n  intent:\n    min_confidence: 0.9\n", specialists.IntentConfig{Enabled: true, MinConfidence: 0.9, Timeout: 10 * time.Second}},
+		{"full", "routing:\n  intent:\n    enabled: true\n    min_confidence: 1\n    timeout: 2s\n", specialists.IntentConfig{Enabled: true, MinConfidence: 1, Timeout: 2 * time.Second}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var config Config
+			if err := loadPolicy(writeRoutingConfig(t, tc.routing), &config); err != nil {
+				t.Fatal(err)
+			}
+			if config.IntentClassification != tc.want {
+				t.Fatalf("intent = %+v, want %+v", config.IntentClassification, tc.want)
+			}
+		})
+	}
+}
+
+func TestRoutingConfigRejectsMalformedSettings(t *testing.T) {
+	t.Parallel()
+	for name, setting := range map[string]string{
+		"unknown intent option":  "intent:\n    enable: false",
+		"confidence zero":        "intent:\n    min_confidence: 0",
+		"confidence high":        "intent:\n    min_confidence: 1.01",
+		"confidence nan":         "intent:\n    min_confidence: .nan",
+		"confidence infinite":    "intent:\n    min_confidence: .inf",
+		"timeout zero":           "intent:\n    timeout: 0s",
+		"timeout long":           "intent:\n    timeout: 6m",
+		"timeout malformed":      "intent:\n    timeout: tomorrow",
+		"unknown routing option": "unknown: true",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var config Config
+			if err := loadPolicy(writeRoutingConfig(t, "routing:\n  "+setting+"\n"), &config); err == nil {
+				t.Fatal("expected rejection")
+			}
+		})
+	}
+	for name, match := range map[string]string{
+		"empty selector":     "request_types: []",
+		"null selector":      "request_types: null",
+		"empty fields":       "fields: {}",
+		"null fields":        "fields: null",
+		"unknown selector":   "request_type: [Access request]",
+		"duplicate field":    "fields:\n          key: [A]\n          ' key ': [B]",
+		"empty field values": "fields:\n          key: []",
+	} {
+		t.Run(name, func(t *testing.T) {
+			routing := "routing:\n  rules:\n    - name: test\n      specialist: help_desk\n      classification: triage\n      match:\n        " + match + "\n"
+			var config Config
+			if err := loadPolicy(writeRoutingConfig(t, routing), &config); err == nil {
+				t.Fatal("expected rejection")
+			}
+		})
+	}
+}
+
+func TestRoutingConfigSources(t *testing.T) {
+	t.Parallel()
+	routing := "routing:\n  rules:\n    - name: jira-test\n      specialist: help_desk\n      classification: triage\n      match:\n        sources: [jira]\n"
+	var config Config
+	if err := loadPolicy(writeRoutingConfig(t, routing), &config); err != nil {
+		t.Fatal(err)
+	}
+	if got := config.RoutingRules[0].Match.Sources; len(got) != 1 || got[0] != "jira" {
+		t.Fatalf("sources = %v", got)
+	}
+}
+
+func TestRoutingConfigRejectsOversizedAndMultipleDocuments(t *testing.T) {
+	t.Parallel()
+	for _, suffix := range []string{"---\nrouting: {}\n", "#" + strings.Repeat("x", 1<<20)} {
+		var config Config
+		if err := loadPolicy(writeRoutingConfig(t, suffix), &config); err == nil {
+			t.Fatal("expected rejection")
+		}
+	}
+}
+
+func writeRoutingConfig(t *testing.T, routing string) string {
+	t.Helper()
+	base, err := os.ReadFile("testdata/valid.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Split(string(base), "\nrouting:")[0] + "\n" + routing
+	path := filepath.Join(t.TempDir(), "wardstone.yaml")
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestLoadPolicyRejectsUnknownMode(t *testing.T) {

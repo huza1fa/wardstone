@@ -154,6 +154,7 @@
   }
 
   async function showInvestigation(id) {
+    const sessionToken = state.token;
     const dialog = byId("investigation-dialog");
     const body = byId("dialog-body");
     byId("dialog-title").textContent = id;
@@ -164,23 +165,83 @@
         api(`/v1/investigations/${encodeURIComponent(id)}`),
         api(`/v1/investigations/${encodeURIComponent(id)}/timeline`),
       ]);
+      if (state.token !== sessionToken) return;
       const fields = node("div", { className: "detail-grid" }, [
         detailField("Status", investigation.status), detailField("Ticket ID", investigation.ticket_id),
-        detailField("Specialist", investigation.specialist || "Unassigned"), detailField("Model", investigation.model || "—"), detailField("Prompt", investigation.prompt_version || "—"),
+        detailField("Current specialist", investigation.specialist || "Unassigned"), detailField("Model", investigation.model || "—"), detailField("Prompt", investigation.prompt_version || "—"),
         detailField("Started", formatDate(investigation.started_at)), detailField("Completed", formatDate(investigation.completed_at)),
       ]);
       const timeline = node("ol", { className: "timeline" });
       for (const event of timelinePayload.events || []) {
-        timeline.append(node("li", {}, [node("strong", { text: humanize(event.type) }), node("small", { text: `${formatDate(event.occurred_at)} · ${event.actor_id || event.actor_type}` })]));
+        const entry = node("li", {}, [node("strong", { text: humanize(event.type) }), node("small", { text: `${formatDate(event.occurred_at)} · ${event.actor_id || event.actor_type}` })]);
+        const description = describeRoutingEvent(event);
+        if (description) entry.append(node("p", { text: description }));
+        timeline.append(entry);
       }
-      body.replaceChildren(fields, node("h3", { text: investigation.failure ? "Failure" : "Diagnosis" }), node("p", { className: "diagnosis", text: investigation.failure || investigation.diagnosis || "No diagnosis yet." }), node("h3", { text: "Audit timeline" }), timeline);
+      body.replaceChildren(fields, routingCard(investigation.routing), node("h3", { text: investigation.failure ? "Failure" : "Diagnosis" }), node("p", { className: "diagnosis", text: investigation.failure || investigation.diagnosis || "No diagnosis yet." }), node("h3", { text: "Audit timeline" }), timeline);
     } catch (error) {
+      if (state.token !== sessionToken) return;
       body.replaceChildren(emptyState("!", "Could not load investigation", error.message));
     }
   }
 
   function detailField(label, value) {
     return node("div", { className: "detail-field" }, [node("span", { text: label }), node("strong", { text: value || "—" })]);
+  }
+
+  function routingCard(routing, { preview = false } = {}) {
+    const card = node("article", { className: "routing-card" }, [node("h3", { text: preview ? "Routing result" : "Initial ticket routing" })]);
+    if (!routing) {
+      card.append(node("p", { className: "routing-reason", text: "Routing details were not recorded for this investigation." }));
+      return card;
+    }
+    const fields = [
+      detailField("Classification", routing.classification),
+      detailField("Initial specialist", routing.specialist),
+      detailField("Source", routing.source),
+    ];
+    if (routing.rule_name) fields.push(detailField("Matched rule", routing.rule_name));
+    if (routing.confidence != null) fields.push(detailField("Confidence", `${Math.round(routing.confidence * 100)}%`));
+    if (routing.fallback_code) fields.push(detailField("Fallback", routing.fallback_code));
+    if (routing.model_provider || routing.model) fields.push(detailField("Classification model", [routing.model_provider, routing.model].filter(Boolean).join(" / ")));
+    card.append(node("div", { className: "detail-grid" }, fields), node("p", { className: "routing-reason", text: routing.reason || "No routing reason recorded." }));
+    if (preview) card.append(node("p", { className: "routing-copy", text: routing.source === "rule" ? "The ticket matched a routing rule; model intent classification is unnecessary." : "No rule matched. The preview stops before model intent classification; the reason above explains the configured fallback." }));
+    return card;
+  }
+
+  function describeRoutingEvent(event) {
+    const data = event.data || {};
+    if (event.type === "dispatcher.routed") {
+      const routing = data.routing || data;
+      return [routing.specialist && `Initial specialist: ${routing.specialist}`, routing.classification && `Classification: ${routing.classification}`, routing.source && `Source: ${routing.source}`, routing.rule_name && `Rule: ${routing.rule_name}`, routing.fallback_code && `Fallback: ${routing.fallback_code}`, routing.reason].filter(Boolean).join(" · ");
+    }
+    if (event.type === "specialist.handed_off") {
+      return [data.from && data.to ? `${data.from} → ${data.to}` : "Specialist handoff", data.reason].filter(Boolean).join(" · ");
+    }
+    return "";
+  }
+
+  async function submitRoutingPreview(event) {
+    event.preventDefault();
+    const sessionToken = state.token;
+    const submit = byId("routing-preview-submit");
+    const result = byId("routing-preview-result");
+    const errorBox = byId("routing-preview-error");
+    submit.disabled = true;
+    errorBox.textContent = "";
+    result.replaceChildren();
+    try {
+      const payload = JSON.parse(byId("routing-payload").value);
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Enter one Jira ticket JSON object.");
+      const response = await api("/v1/admin/routing/preview", { method: "POST", body: JSON.stringify(payload) });
+      if (state.token !== sessionToken) return;
+      result.replaceChildren(routingCard(response.routing, { preview: true }));
+    } catch (error) {
+      if (state.token !== sessionToken) return;
+      errorBox.textContent = error instanceof SyntaxError ? "Enter valid JSON for the Jira ticket payload." : error.message;
+    } finally {
+      submit.disabled = false;
+    }
   }
 
   function openDecision(id, decision) {
@@ -221,12 +282,18 @@
 
   function disconnect() {
     state.token = "";
+    state.investigations = [];
+    state.approvals = [];
     sessionStorage.removeItem("wardstone.operatorToken");
     tokenInput.value = "";
     connection.hidden = false;
     dashboard.hidden = true;
     sessionButton.textContent = "Connect";
     refreshButton.disabled = true;
+    byId("routing-preview-result").replaceChildren();
+    byId("routing-preview-error").textContent = "";
+    byId("investigation-dialog").close();
+    byId("decision-dialog").close();
   }
 
   function showToast(message) {
@@ -275,6 +342,7 @@
   byId("dialog-close").addEventListener("click", () => byId("investigation-dialog").close());
   document.querySelectorAll(".dialog-cancel").forEach((button) => button.addEventListener("click", () => byId("decision-dialog").close()));
   byId("decision-form").addEventListener("submit", submitDecision);
+  byId("routing-preview-form").addEventListener("submit", submitRoutingPreview);
   document.querySelectorAll(".nav-item").forEach((link) => link.addEventListener("click", () => {
     document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active"));
     link.classList.add("active");

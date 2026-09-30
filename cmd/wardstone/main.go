@@ -100,6 +100,7 @@ func run(logger *slog.Logger) error {
 		DeliverRequesterMessages: settings.Mode != domain.OperatingModeShadow,
 		Specialists:              specialistRegistry,
 		RoutingRules:             settings.RoutingRules,
+		IntentClassification:     &settings.IntentClassification,
 	})
 	if err != nil {
 		return err
@@ -113,7 +114,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	apiServer, err := api.NewServer(service, store, settings.JiraWebhookSecret, settings.OperatorToken,
-		api.WithAdmin(store, approvalService, settings.Mode), api.WithConversations(service))
+		api.WithAdmin(store, approvalService, settings.Mode), api.WithConversations(service), api.WithRoutingPreview(service))
 	if err != nil {
 		return err
 	}

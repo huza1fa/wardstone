@@ -486,6 +486,7 @@ func TestHelpDeskHandoffResumesWithAccessSpecialist(t *testing.T) {
 	service := newService(t, store, nil, model, registryForTest(t), 1)
 	work := ticket("JIRA-HANDOFF")
 	work.Summary = "VPN connection fails"
+	work.Metadata = domain.TicketMetadata{}
 	id, _, err := service.Receive(context.Background(), work)
 	if err != nil {
 		t.Fatal(err)
@@ -534,6 +535,7 @@ func TestHelpDeskCannotProposeAccessCapability(t *testing.T) {
 	service := newService(t, store, []connectors.EvidenceCollector{collector}, model, registryForTest(t), 1)
 	work := ticket("JIRA-HELP-DESK-BOUNDARY")
 	work.Summary = "VPN connection fails"
+	work.Metadata = domain.TicketMetadata{}
 	id, _, err := service.Receive(context.Background(), work)
 	if err != nil {
 		t.Fatal(err)
@@ -651,7 +653,7 @@ func noActionDiagnosis(context.Context, agent.Request) (agent.Result, error) {
 	return agent.Result{Diagnosis: "No action is needed."}, nil
 }
 
-func newService(t *testing.T, store *memory.Store, collectors []connectors.EvidenceCollector, model agent.ModelProvider, registry *capabilities.Registry, concurrency int) *investigations.Service {
+func newService(t *testing.T, store *memory.Store, collectors []connectors.EvidenceCollector, model agent.ModelProvider, registry *capabilities.Registry, concurrency int, options ...func(*investigations.Config)) *investigations.Service {
 	t.Helper()
 	evaluator := policy.New(domain.OperatingModeShadow, registry, map[domain.CapabilityName]policy.RuleMode{"test.read": policy.RuleAllow, "test.write": policy.RuleAllow})
 	collectorCapabilities := make([]domain.CapabilityName, 0, len(collectors))
@@ -678,10 +680,16 @@ func newService(t *testing.T, store *memory.Store, collectors []connectors.Evide
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := investigations.NewService(store, collectors, model, registry, evaluator, investigations.Config{
+	config := investigations.Config{
 		MaxConcurrentCollectors: concurrency, CollectorTimeout: time.Minute,
 		ModelTimeout: time.Minute, PromptVersion: "test-v1", Specialists: profiles,
-	})
+		RoutingRules: []specialists.RouteRule{{Name: "test-access", Specialist: specialists.AccessManagement, Classification: "access_management",
+			Match: specialists.RouteMatch{RequestTypes: []string{"Access request"}}}},
+	}
+	for _, option := range options {
+		option(&config)
+	}
+	service, err := investigations.NewService(store, collectors, model, registry, evaluator, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -701,5 +709,6 @@ func registryForTest(t *testing.T) *capabilities.Registry {
 }
 
 func ticket(externalID string) domain.Ticket {
-	return domain.Ticket{Source: "jira", ExternalID: externalID, Summary: "Access request", ReporterEmail: "jane@example.com"}
+	return domain.Ticket{Source: "jira", ExternalID: externalID, Summary: "Access request", ReporterEmail: "jane@example.com",
+		Metadata: domain.TicketMetadata{RequestType: "Access request"}}
 }

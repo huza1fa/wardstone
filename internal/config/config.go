@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +41,7 @@ type Config struct {
 	PolicyRules          map[domain.CapabilityName]policy.RuleMode
 	Specialists          []specialists.Profile
 	RoutingRules         []specialists.RouteRule
+	IntentClassification specialists.IntentConfig
 }
 
 func Load() (Config, error) {
@@ -108,6 +110,13 @@ func loadPolicy(path string, config *Config) error {
 		return fmt.Errorf("open configuration file: %w", err)
 	}
 	defer file.Close()
+	contents, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	if err != nil {
+		return fmt.Errorf("read configuration file: %w", err)
+	}
+	if len(contents) > 1<<20 {
+		return errors.New("configuration file must be at most 1 MiB")
+	}
 	var raw struct {
 		Capabilities map[domain.CapabilityName]struct {
 			Mode policy.RuleMode `yaml:"mode"`
@@ -120,10 +129,12 @@ func loadPolicy(path string, config *Config) error {
 			HandoffTo    []domain.SpecialistName `yaml:"handoff_to"`
 		} `yaml:"specialists"`
 		Routing struct {
-			Rules []specialists.RouteRule `yaml:"rules"`
+			Rules  []specialists.RouteRule  `yaml:"rules"`
+			Intent specialists.IntentConfig `yaml:"intent"`
 		} `yaml:"routing"`
 	}
-	decoder := yaml.NewDecoder(io.LimitReader(file, 1<<20))
+	raw.Routing.Intent = specialists.DefaultIntentConfig()
+	decoder := yaml.NewDecoder(bytes.NewReader(contents))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&raw); err != nil {
 		return fmt.Errorf("decode configuration file: %w", err)
@@ -164,8 +175,12 @@ func loadPolicy(path string, config *Config) error {
 	if _, err := specialists.NewDispatcherWithRules(registry, raw.Routing.Rules); err != nil {
 		return fmt.Errorf("specialists: %w", err)
 	}
+	if err := raw.Routing.Intent.Validate(); err != nil {
+		return fmt.Errorf("routing intent: %w", err)
+	}
 	config.Specialists = profiles
 	config.RoutingRules = append([]specialists.RouteRule(nil), raw.Routing.Rules...)
+	config.IntentClassification = raw.Routing.Intent
 	return nil
 }
 

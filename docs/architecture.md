@@ -153,7 +153,8 @@ Consumers order by sequence, not wall-clock time.
 The first workflow emits this ordered lifecycle:
 
 1. `ticket.received`
-2. `dispatcher.routed`, recording the deterministic classification and selected specialist
+2. `dispatcher.routed`, recording classification, specialist, source, rule or
+   fallback code, and model identity/confidence when available
 3. `investigation.started` and `specialist.started`
 4. One `tool.invoked` for each profile-permitted evidence query
 5. `evidence.collected` or `evidence.collection_failed` for each result
@@ -269,9 +270,11 @@ redaction is planned and must not be assumed.
 1. A Jira webhook is authenticated and normalized.
 2. The ticket and pending investigation/job are inserted idempotently.
 3. A bounded worker claims the job and marks the investigation running.
-4. The deterministic dispatcher records a Help Desk or Access Management
-   route. Only that specialist's Google read collectors gather context
-   concurrently.
+4. Ordered rules first route from Jira metadata. If no rule matches, a bounded
+   intent classifier can choose an installed specialist at the configured
+   confidence threshold. Failure or uncertainty assigns Help Desk. The original
+   decision is immutable and persisted with its audit event. Only the chosen
+   profile's allowed read collectors gather context concurrently.
 5. Successful evidence and structured failures are persisted.
 6. The configured model provider generates a diagnosis and zero or more
    structured action proposals referencing evidence IDs.

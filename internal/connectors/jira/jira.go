@@ -46,7 +46,7 @@ func Normalize(payload TicketPayload, now time.Time) (domain.Ticket, error) {
 	if payload.ExternalID == "" || payload.Summary == "" {
 		return domain.Ticket{}, errors.New("external_id and summary are required")
 	}
-	return domain.Ticket{
+	ticket := domain.Ticket{
 		ID: domain.NewTicketID(), Source: Name, ExternalID: payload.ExternalID,
 		Summary: payload.Summary, Description: payload.Description,
 		ReporterEmail: payload.ReporterEmail,
@@ -56,7 +56,11 @@ func Normalize(payload TicketPayload, now time.Time) (domain.Ticket, error) {
 			Labels:     append([]string(nil), payload.Labels...), Fields: cloneFields(payload.Fields),
 		},
 		CreatedAt: now,
-	}, nil
+	}
+	if err := ticket.Validate(); err != nil {
+		return domain.Ticket{}, err
+	}
+	return ticket, nil
 }
 
 func cloneFields(fields map[string][]string) map[string][]string {

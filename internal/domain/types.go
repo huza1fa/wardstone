@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -105,9 +106,37 @@ type TicketMetadata struct {
 	Fields      map[string][]string `json:"fields,omitempty"`
 }
 
+// Clone isolates connector-owned metadata before it crosses a component boundary.
+func (m TicketMetadata) Clone() TicketMetadata {
+	m.Components = append([]string(nil), m.Components...)
+	m.Labels = append([]string(nil), m.Labels...)
+	if m.Fields != nil {
+		fields := make(map[string][]string, len(m.Fields))
+		for key, values := range m.Fields {
+			fields[key] = append([]string(nil), values...)
+		}
+		m.Fields = fields
+	}
+	return m
+}
+
 func (t Ticket) Validate() error {
-	if t.ID == "" || t.Source == "" || t.ExternalID == "" || t.Summary == "" {
-		return errors.New("ticket ID, source, external ID, and summary are required")
+	for _, field := range []struct {
+		name     string
+		value    string
+		limit    int
+		required bool
+	}{
+		{"ticket ID", string(t.ID), 128, true},
+		{"ticket source", string(t.Source), 128, true},
+		{"external ID", t.ExternalID, 256, true},
+		{"summary", t.Summary, 8 * 1024, true},
+		{"description", t.Description, 64 * 1024, false},
+		{"reporter email", t.ReporterEmail, 320, false},
+	} {
+		if err := validateText(field.name, field.value, field.limit, field.required); err != nil {
+			return err
+		}
 	}
 	return t.Metadata.Validate()
 }
@@ -116,22 +145,44 @@ func (m TicketMetadata) Validate() error {
 	if len(m.IssueType) > 256 || len(m.RequestType) > 256 || len(m.Components) > 64 || len(m.Labels) > 64 || len(m.Fields) > 64 {
 		return errors.New("ticket metadata exceeds routing field limits")
 	}
+	if err := validateText("issue type", m.IssueType, 256, false); err != nil {
+		return err
+	}
+	if err := validateText("request type", m.RequestType, 256, false); err != nil {
+		return err
+	}
 	for _, values := range [][]string{m.Components, m.Labels} {
 		for _, value := range values {
-			if len(value) > 256 {
-				return errors.New("ticket metadata values must be at most 256 bytes")
+			if err := validateText("ticket metadata value", value, 256, true); err != nil {
+				return err
 			}
 		}
 	}
+	keys := make(map[string]struct{}, len(m.Fields))
 	for field, values := range m.Fields {
 		if field == "" || len(field) > 128 || len(values) == 0 || len(values) > 32 {
 			return errors.New("ticket metadata fields must have a bounded name and values")
 		}
+		if err := validateText("ticket metadata field", field, 128, true); err != nil {
+			return err
+		}
+		key := strings.TrimSpace(field)
+		if _, duplicate := keys[key]; duplicate {
+			return errors.New("ticket metadata contains duplicate normalized field names")
+		}
+		keys[key] = struct{}{}
 		for _, value := range values {
-			if len(value) > 512 {
-				return errors.New("ticket metadata field values must be at most 512 bytes")
+			if err := validateText("ticket metadata field value", value, 512, true); err != nil {
+				return err
 			}
 		}
+	}
+	encoded, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("encode ticket metadata: %w", err)
+	}
+	if len(encoded) > 32*1024 {
+		return errors.New("ticket metadata must be at most 32 KiB serialized")
 	}
 	return nil
 }
@@ -144,6 +195,7 @@ type Investigation struct {
 	Model         string              `json:"model,omitempty"`
 	PromptVersion string              `json:"prompt_version"`
 	Specialist    SpecialistName      `json:"specialist,omitempty"`
+	Routing       *RoutingDecision    `json:"routing,omitempty"`
 	Diagnosis     string              `json:"diagnosis,omitempty"`
 	Failure       string              `json:"failure,omitempty"`
 	CreatedAt     time.Time           `json:"created_at"`

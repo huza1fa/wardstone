@@ -84,3 +84,31 @@ func TestModelRendersNestedInvestigationTicket(t *testing.T) {
 func keyMsg(value string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)}
 }
+
+func TestModelShowsInitialRoutingSeparatelyFromActiveSpecialist(t *testing.T) {
+	model := NewModel(&fakeAPI{}, Options{})
+	model.width = 140
+	model.view = investigationsView
+	model.snapshot.Investigations = []Investigation{{
+		Investigation: domain.Investigation{ID: "inv-route", Status: domain.InvestigationRunning, Specialist: "access_management", Routing: &domain.RoutingDecision{
+			Specialist: "help_desk", Classification: "unknown", Source: "fallback", FallbackCode: "model_low_confidence", Reason: "The ticket needs clarification.",
+		}},
+	}}
+	view := model.View()
+	for _, expected := range []string{"access_management", "Initial routing: fallback → help_desk (unknown)", "Fallback: model_low_confidence", "The ticket needs clarification."} {
+		if !strings.Contains(view, expected) {
+			t.Errorf("routing detail missing %q from view:\n%s", expected, view)
+		}
+	}
+	model.snapshot.Investigations[0].Routing = nil
+	if !strings.Contains(model.View(), "Initial routing: not recorded") {
+		t.Fatal("legacy investigation must show absent routing data")
+	}
+}
+
+func TestRoutingRenderingRemovesUntrustedTerminalControls(t *testing.T) {
+	view := renderRouting(&domain.RoutingDecision{Specialist: "help_desk", Classification: "help_desk", Source: "rule", RuleName: "rule\nspoofed", Reason: "text\x1b]52;c;payload\a"}, 200)
+	if strings.Contains(view, "\x1b]52") || strings.Contains(view, "\a") || strings.Contains(view, "rule\nspoofed") {
+		t.Fatalf("terminal controls survived: %q", view)
+	}
+}

@@ -49,7 +49,7 @@ func (s *Store) ReceiveTicket(_ context.Context, ticket domain.Ticket, investiga
 		return existing, false, nil
 	}
 	s.tickets[ticket.ID] = cloneTicket(ticket)
-	s.investigations[investigation.ID] = investigation
+	s.investigations[investigation.ID] = cloneInvestigation(investigation)
 	s.dedupe[key] = investigation.ID
 	s.appendEvent(investigation.ID, audit.TicketReceived, audit.ActorConnector, string(ticket.Source), ticket.CreatedAt, map[string]any{
 		"ticket_id": ticket.ID, "source": ticket.Source, "external_id": ticket.ExternalID,
@@ -64,7 +64,7 @@ func (s *Store) GetInvestigation(_ context.Context, id domain.InvestigationID) (
 	if !ok {
 		return domain.Investigation{}, investigations.ErrNotFound
 	}
-	return item, nil
+	return cloneInvestigation(item), nil
 }
 
 func (s *Store) GetTicket(_ context.Context, id domain.InvestigationID) (domain.Ticket, error) {
@@ -89,27 +89,31 @@ func (s *Store) ListMessages(_ context.Context, id domain.InvestigationID) ([]do
 	return result, nil
 }
 
-func (s *Store) Dispatch(_ context.Context, id domain.InvestigationID, specialist domain.SpecialistName, classification, reason string, at time.Time) error {
+func (s *Store) Dispatch(ctx context.Context, id domain.InvestigationID, decision domain.RoutingDecision, at time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := decision.Validate(); err != nil {
+		return fmt.Errorf("%w: invalid routing decision: %v", investigations.ErrInvalidTransition, err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	item, ok := s.investigations[id]
 	if !ok {
 		return investigations.ErrNotFound
 	}
-	if item.Specialist != "" {
-		if item.Specialist == specialist {
+	if item.Routing != nil {
+		if item.Routing.Equal(decision) {
 			return nil
 		}
-		return fmt.Errorf("%w: specialist already selected", investigations.ErrInvalidTransition)
+		return fmt.Errorf("%w: routing decision already selected", investigations.ErrInvalidTransition)
 	}
-	if item.Status != domain.InvestigationPending || specialist == "" || classification == "" || reason == "" {
+	if item.Status != domain.InvestigationPending || item.Specialist != "" {
 		return investigations.ErrInvalidTransition
 	}
-	item.Specialist = specialist
-	s.investigations[id] = item
-	s.appendEvent(id, audit.DispatcherRouted, audit.ActorSystem, "dispatcher", at, map[string]any{
-		"specialist": specialist, "classification": classification, "reason": reason,
-	})
+	item.Specialist, item.Routing = decision.Specialist, &decision
+	s.investigations[id] = cloneInvestigation(item)
+	s.appendEvent(id, audit.DispatcherRouted, audit.ActorSystem, "dispatcher", at, decision)
 	return nil
 }
 
@@ -462,16 +466,28 @@ func (s *Store) appendEvent(id domain.InvestigationID, eventType audit.EventType
 }
 
 func cloneTicket(ticket domain.Ticket) domain.Ticket {
-	ticket.Metadata.Components = append([]string(nil), ticket.Metadata.Components...)
-	ticket.Metadata.Labels = append([]string(nil), ticket.Metadata.Labels...)
-	if len(ticket.Metadata.Fields) != 0 {
-		fields := make(map[string][]string, len(ticket.Metadata.Fields))
-		for key, values := range ticket.Metadata.Fields {
-			fields[key] = append([]string(nil), values...)
-		}
-		ticket.Metadata.Fields = fields
-	}
+	ticket.Metadata = ticket.Metadata.Clone()
 	return ticket
+}
+
+func cloneInvestigation(item domain.Investigation) domain.Investigation {
+	if item.Routing != nil {
+		decision := *item.Routing
+		if decision.Confidence != nil {
+			confidence := *decision.Confidence
+			decision.Confidence = &confidence
+		}
+		item.Routing = &decision
+	}
+	if item.StartedAt != nil {
+		started := *item.StartedAt
+		item.StartedAt = &started
+	}
+	if item.CompletedAt != nil {
+		completed := *item.CompletedAt
+		item.CompletedAt = &completed
+	}
+	return item
 }
 
 func cloneEvaluation(item investigations.ActionEvaluation) investigations.ActionEvaluation {

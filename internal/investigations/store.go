@@ -37,7 +37,7 @@ type Store interface {
 	GetInvestigation(context.Context, domain.InvestigationID) (domain.Investigation, error)
 	GetTicket(context.Context, domain.InvestigationID) (domain.Ticket, error)
 	ListMessages(context.Context, domain.InvestigationID) ([]domain.CaseMessage, error)
-	Dispatch(context.Context, domain.InvestigationID, domain.SpecialistName, string, string, time.Time) error
+	Dispatch(context.Context, domain.InvestigationID, domain.RoutingDecision, time.Time) error
 	StartInvestigation(context.Context, domain.InvestigationID, time.Time) error
 	RecordToolInvocations(context.Context, domain.InvestigationID, []ToolInvocation, time.Time) error
 	RecordEvidence(context.Context, domain.InvestigationID, []domain.Evidence, []CollectionFailure, time.Time) error

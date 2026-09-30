@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/wardstone-project/wardstone/internal/domain"
 )
 
 type view int
@@ -299,7 +301,7 @@ func (m Model) renderInvestigations(width, height int) string {
 	if len(items) == 0 {
 		return emptyPanel(width, "No investigations", "New Jira work will appear here after it is received.")
 	}
-	maxRows := max(3, height-9)
+	maxRows := max(3, height-13)
 	start, end := visibleRange(len(items), maxRows, m.cursors[investigationsView])
 	lines := []string{mutedStyle.Render(fmt.Sprintf("   %-11s %-12s %-16s %s", "STATUS", "TICKET", "CREATED", "SUMMARY"))}
 	for index := start; index < end; index++ {
@@ -326,7 +328,37 @@ func (m Model) renderInvestigations(width, height int) string {
 		specialist = "unassigned"
 	}
 	detail = fmt.Sprintf("%s  %s  %s\n%s", titleStyle.Render(shortID(string(selected.ID))), statusStyle(string(selected.Status)).Render(string(selected.Status)), mutedStyle.Render(specialist), truncate(detail, max(24, width-8)))
+	detail += "\n" + renderRouting(selected.Routing, max(24, width-8))
 	return lipgloss.NewStyle().Padding(1).Render(strings.Join(lines, "\n") + "\n\n" + panelStyle.Width(max(20, width-6)).Render(detail))
+}
+
+func renderRouting(routing *domain.RoutingDecision, width int) string {
+	if routing == nil {
+		return mutedStyle.Render("Initial routing: not recorded")
+	}
+	lines := []string{
+		fmt.Sprintf("Initial routing: %s → %s (%s)", routing.Source, routing.Specialist, routing.Classification),
+	}
+	if routing.RuleName != "" {
+		lines = append(lines, "Rule: "+routing.RuleName)
+	}
+	if routing.FallbackCode != "" {
+		lines = append(lines, "Fallback: "+routing.FallbackCode)
+	}
+	if routing.Reason != "" {
+		lines = append(lines, routing.Reason)
+	}
+	for index, line := range lines {
+		// Ticket-derived explanations must not inject terminal control sequences.
+		line = strings.Map(func(value rune) rune {
+			if unicode.IsControl(value) {
+				return ' '
+			}
+			return value
+		}, line)
+		lines[index] = mutedStyle.Render(truncate(line, width))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderApprovals(width, height int) string {

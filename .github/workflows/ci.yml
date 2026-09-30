@@ -29,9 +29,14 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.25.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Apply migrations
         run: for migration in migrations/*.sql; do psql "$WARDSTONE_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration"; done
       - name: Vet
         run: go vet ./...
       - name: Test with race detector
         run: go test -race ./...
+      - name: Web console tests
+        run: node --test internal/api/web_app_test.js

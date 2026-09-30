@@ -32,16 +32,33 @@ type ConversationService interface {
 	ListMessages(context.Context, domain.InvestigationID) ([]domain.CaseMessage, error)
 }
 
+// RoutingPreviewer evaluates ticket metadata without creating investigations or
+// invoking models. Previewing uses the same operator authentication as reads.
+type RoutingPreviewer interface {
+	PreviewRouting(context.Context, domain.Ticket) (domain.RoutingDecision, error)
+}
+
 type Server struct {
-	service       InvestigationService
-	reader        InvestigationReader
-	adminReader   AdminReader
-	approvals     ApprovalService
-	conversations ConversationService
-	mode          domain.OperatingMode
-	webhookSecret string
-	operatorToken string
-	now           func() time.Time
+	service        InvestigationService
+	reader         InvestigationReader
+	adminReader    AdminReader
+	approvals      ApprovalService
+	conversations  ConversationService
+	routingPreview RoutingPreviewer
+	mode           domain.OperatingMode
+	webhookSecret  string
+	operatorToken  string
+	now            func() time.Time
+}
+
+func WithRoutingPreview(previewer RoutingPreviewer) Option {
+	return func(server *Server) error {
+		if previewer == nil {
+			return errors.New("routing preview service is required")
+		}
+		server.routingPreview = previewer
+		return nil
+	}
 }
 
 func WithConversations(service ConversationService) Option {
@@ -98,6 +115,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/admin/overview", s.getAdminOverview)
 	mux.HandleFunc("GET /v1/admin/investigations", s.listAdminInvestigations)
 	mux.HandleFunc("GET /v1/admin/approvals", s.listAdminApprovals)
+	mux.HandleFunc("POST /v1/admin/routing/preview", s.previewRouting)
 	mux.HandleFunc("POST /v1/admin/approvals/{id}/decision", s.decideAdminApproval)
 	s.registerWeb(mux)
 	return mux
@@ -114,14 +132,14 @@ func (s *Server) receiveJiraReply(writer http.ResponseWriter, request *http.Requ
 	}
 	defer request.Body.Close()
 	var payload jira.ReplyPayload
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxRequestBody+1))
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, maxRequestBody))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil {
-		writeError(writer, http.StatusBadRequest, "invalid JSON payload")
+		writePayloadDecodeError(writer, err, "invalid JSON payload")
 		return
 	}
 	if err := requireEOF(decoder); err != nil {
-		writeError(writer, http.StatusBadRequest, "payload must contain one JSON object")
+		writePayloadDecodeError(writer, err, "payload must contain one JSON object")
 		return
 	}
 	ticketExternalID, message, err := jira.NormalizeReply(payload, s.now())
@@ -168,14 +186,14 @@ func (s *Server) receiveJira(writer http.ResponseWriter, request *http.Request) 
 	}
 	defer request.Body.Close()
 	var payload jira.TicketPayload
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxRequestBody+1))
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, maxRequestBody))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil {
-		writeError(writer, http.StatusBadRequest, "invalid JSON payload")
+		writePayloadDecodeError(writer, err, "invalid JSON payload")
 		return
 	}
 	if err := requireEOF(decoder); err != nil {
-		writeError(writer, http.StatusBadRequest, "payload must contain one JSON object")
+		writePayloadDecodeError(writer, err, "payload must contain one JSON object")
 		return
 	}
 	ticket, err := jira.Normalize(payload, s.now())
@@ -266,6 +284,9 @@ func authorized(request *http.Request, expected string) bool {
 func requireEOF(decoder *json.Decoder) error {
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return err
+		}
 		return errors.New("trailing JSON value")
 	}
 	return nil

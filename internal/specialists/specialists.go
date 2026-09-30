@@ -6,8 +6,13 @@ package specialists
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
+	"time"
+	"unicode/utf8"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/wardstone-project/wardstone/internal/domain"
 )
@@ -30,22 +35,22 @@ type Profile struct {
 }
 
 func (p Profile) Validate() error {
-	if p.Name == "" || len(p.Name) > 64 {
-		return errors.New("specialist name is required and must be at most 64 bytes")
+	if !validConfiguredText(string(p.Name), 64) {
+		return errors.New("specialist name must be nonblank valid UTF-8 without NUL and at most 64 bytes")
 	}
-	if strings.TrimSpace(p.Instructions) == "" || len(p.Instructions) > 8000 {
-		return errors.New("specialist instructions are required and must be at most 8000 bytes")
+	if !validConfiguredText(p.Instructions, 8000) {
+		return errors.New("specialist instructions must be nonblank valid UTF-8 without NUL and at most 8000 bytes")
 	}
 	if len(p.AllowedCollectors) > 128 || len(p.AllowedCapabilities) > 128 || len(p.HandoffTargets) > 32 {
 		return errors.New("specialist allowlists exceed configured safety limits")
 	}
 	for _, capability := range append(append([]domain.CapabilityName(nil), p.AllowedCollectors...), p.AllowedCapabilities...) {
-		if capability == "" || len(capability) > 128 {
-			return errors.New("specialist capability names must be non-empty and at most 128 bytes")
+		if !validConfiguredText(string(capability), 128) {
+			return errors.New("specialist capability names must be nonblank valid UTF-8 without NUL and at most 128 bytes")
 		}
 	}
 	for _, target := range p.HandoffTargets {
-		if target == "" || len(target) > 64 || target == p.Name {
+		if !validConfiguredText(string(target), 64) || target == p.Name {
 			return errors.New("specialist handoff targets must be distinct non-empty specialist names")
 		}
 	}
@@ -144,11 +149,38 @@ func NewDispatcher(registry *Registry) (*Dispatcher, error) {
 // This lets an administrator make Jira request type authoritative while still
 // requiring a component or custom field for a more specific route.
 type RouteMatch struct {
+	Sources      []string            `yaml:"sources"`
 	IssueTypes   []string            `yaml:"issue_types"`
 	RequestTypes []string            `yaml:"request_types"`
 	Components   []string            `yaml:"components"`
 	Labels       []string            `yaml:"labels"`
 	Fields       map[string][]string `yaml:"fields"`
+}
+
+// Reject explicitly empty or misspelled selectors rather than silently
+// broadening an administrator's rule. A custom decoder must preserve the
+// enclosing configuration decoder's strict unknown-field behavior.
+func (m *RouteMatch) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return errors.New("route match must be a selector mapping")
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i].Value, node.Content[i+1]
+		switch key {
+		case "sources", "issue_types", "request_types", "components", "labels":
+			if value.Kind != yaml.SequenceNode || len(value.Content) == 0 {
+				return fmt.Errorf("route selector %q must contain at least one value", key)
+			}
+		case "fields":
+			if value.Kind != yaml.MappingNode || len(value.Content) == 0 {
+				return errors.New("route fields selector must contain at least one field")
+			}
+		default:
+			return fmt.Errorf("unknown route selector %q", key)
+		}
+	}
+	type plain RouteMatch
+	return node.Decode((*plain)(m))
 }
 
 type RouteRule struct {
@@ -159,30 +191,45 @@ type RouteRule struct {
 }
 
 func (r RouteRule) Validate(registry *Registry) error {
-	if strings.TrimSpace(r.Name) == "" || len(r.Name) > 128 {
+	if !validConfiguredText(r.Name, 128) {
 		return errors.New("route name is required and must be at most 128 bytes")
 	}
 	if r.Specialist == "" {
 		return errors.New("route specialist is required")
 	}
-	if _, ok := registry.Get(r.Specialist); !ok {
+	if registry == nil {
+		return errors.New("specialist registry is required")
+	}
+	if _, ok := registry.profiles[r.Specialist]; !ok {
 		return fmt.Errorf("route %q references unknown specialist %q", r.Name, r.Specialist)
 	}
-	if strings.TrimSpace(r.Classification) == "" || len(r.Classification) > 128 {
+	if !validConfiguredText(r.Classification, 128) {
 		return errors.New("route classification is required and must be at most 128 bytes")
 	}
 	if !r.Match.hasSelector() {
 		return errors.New("route match requires at least one selector")
 	}
-	for _, values := range [][]string{r.Match.IssueTypes, r.Match.RequestTypes, r.Match.Components, r.Match.Labels} {
+	for _, values := range [][]string{r.Match.Sources, r.Match.IssueTypes, r.Match.RequestTypes, r.Match.Components, r.Match.Labels} {
+		if values != nil && len(values) == 0 {
+			return errors.New("route selectors must contain at least one value")
+		}
 		if err := validateRouteValues(values); err != nil {
 			return err
 		}
 	}
+	if len(r.Match.Fields) > 64 {
+		return errors.New("route exceeds 64 custom field selectors")
+	}
+	seenFields := make(map[string]struct{}, len(r.Match.Fields))
 	for field, values := range r.Match.Fields {
-		if strings.TrimSpace(field) == "" || len(field) > 128 || len(values) == 0 {
+		if !validConfiguredText(field, 128) || len(values) == 0 {
 			return errors.New("route field selectors require a name and at least one value")
 		}
+		key := strings.TrimSpace(field)
+		if _, duplicate := seenFields[key]; duplicate {
+			return fmt.Errorf("duplicate trimmed route field %q", key)
+		}
+		seenFields[key] = struct{}{}
 		if err := validateRouteValues(values); err != nil {
 			return err
 		}
@@ -191,104 +238,179 @@ func (r RouteRule) Validate(registry *Registry) error {
 }
 
 func validateRouteValues(values []string) error {
+	if len(values) > 32 {
+		return errors.New("route selectors must have at most 32 alternatives")
+	}
 	for _, value := range values {
-		if strings.TrimSpace(value) == "" || len(value) > 512 {
-			return errors.New("route selector values must be non-empty and at most 512 bytes")
+		if !validConfiguredText(value, 512) {
+			return errors.New("route selector values must be nonblank valid UTF-8 without NUL and at most 512 bytes")
 		}
 	}
 	return nil
 }
 
+func validConfiguredText(value string, maxBytes int) bool {
+	return len(value) <= maxBytes && utf8.ValidString(value) && strings.IndexByte(value, 0) < 0 && strings.TrimSpace(value) != ""
+}
+
 func (m RouteMatch) hasSelector() bool {
-	return len(m.IssueTypes) > 0 || len(m.RequestTypes) > 0 || len(m.Components) > 0 || len(m.Labels) > 0 || len(m.Fields) > 0
+	return len(m.Sources) > 0 || len(m.IssueTypes) > 0 || len(m.RequestTypes) > 0 || len(m.Components) > 0 || len(m.Labels) > 0 || len(m.Fields) > 0
 }
 
 type Dispatcher struct {
 	registry *Registry
-	rules    []RouteRule
+	rules    []compiledRule
+}
+
+const (
+	MaxRoutingRules     = 128
+	maxRoutingSelectors = 4096
+	maxRoutingValues    = 16384
+)
+
+// IntentConfig limits the optional intent model call after no rule matches.
+type IntentConfig struct {
+	Enabled       bool          `yaml:"enabled"`
+	MinConfidence float64       `yaml:"min_confidence"`
+	Timeout       time.Duration `yaml:"timeout"`
+}
+
+func DefaultIntentConfig() IntentConfig {
+	return IntentConfig{Enabled: true, MinConfidence: 0.75, Timeout: 10 * time.Second}
+}
+
+func (c IntentConfig) Validate() error {
+	if math.IsNaN(c.MinConfidence) || math.IsInf(c.MinConfidence, 0) || c.MinConfidence <= 0 || c.MinConfidence > 1 {
+		return errors.New("intent minimum confidence must be finite and greater than zero and at most one")
+	}
+	if c.Timeout <= 0 || c.Timeout > 5*time.Minute {
+		return errors.New("intent timeout must be positive and at most five minutes")
+	}
+	return nil
+}
+
+type compiledField struct {
+	key    string
+	values []string
+}
+
+type compiledRule struct {
+	decision                                              domain.RoutingDecision
+	sources, issueTypes, requestTypes, components, labels []string
+	fields                                                []compiledField
 }
 
 func NewDispatcherWithRules(registry *Registry, rules []RouteRule) (*Dispatcher, error) {
 	if registry == nil {
 		return nil, errors.New("specialist registry is required")
 	}
-	if _, ok := registry.Get(HelpDesk); !ok {
+	if _, ok := registry.profiles[HelpDesk]; !ok {
 		return nil, errors.New("help desk specialist is required as the safe fallback")
 	}
-	copyRules := make([]RouteRule, len(rules))
-	for i, rule := range rules {
-		copyRules[i] = cloneRouteRule(rule)
+	if len(rules) > MaxRoutingRules {
+		return nil, fmt.Errorf("routing exceeds %d rules", MaxRoutingRules)
 	}
-	seen := make(map[string]struct{}, len(copyRules))
-	for _, rule := range copyRules {
+	compiled := make([]compiledRule, 0, len(rules))
+	seen := make(map[string]struct{}, len(rules))
+	selectors, values := 0, 0
+	for _, rule := range rules {
 		if err := rule.Validate(registry); err != nil {
 			return nil, err
 		}
-		if _, duplicate := seen[rule.Name]; duplicate {
+		name := strings.TrimSpace(rule.Name)
+		if _, duplicate := seen[name]; duplicate {
 			return nil, fmt.Errorf("duplicate route %q", rule.Name)
 		}
-		seen[rule.Name] = struct{}{}
-	}
-	return &Dispatcher{registry: registry, rules: copyRules}, nil
-}
-
-func cloneRouteRule(rule RouteRule) RouteRule {
-	rule.Match.IssueTypes = append([]string(nil), rule.Match.IssueTypes...)
-	rule.Match.RequestTypes = append([]string(nil), rule.Match.RequestTypes...)
-	rule.Match.Components = append([]string(nil), rule.Match.Components...)
-	rule.Match.Labels = append([]string(nil), rule.Match.Labels...)
-	if len(rule.Match.Fields) != 0 {
-		fields := make(map[string][]string, len(rule.Match.Fields))
-		for field, values := range rule.Match.Fields {
-			fields[field] = append([]string(nil), values...)
+		seen[name] = struct{}{}
+		for _, alternatives := range [][]string{rule.Match.Sources, rule.Match.IssueTypes, rule.Match.RequestTypes, rule.Match.Components, rule.Match.Labels} {
+			if len(alternatives) > 0 {
+				selectors++
+			}
+			values += len(alternatives)
 		}
-		rule.Match.Fields = fields
+		selectors += len(rule.Match.Fields)
+		for _, alternatives := range rule.Match.Fields {
+			values += len(alternatives)
+		}
+		if selectors > maxRoutingSelectors || values > maxRoutingValues {
+			return nil, errors.New("routing exceeds total selector or alternative limits")
+		}
+		compiledRule := compileRule(rule)
+		if err := compiledRule.decision.Validate(); err != nil {
+			return nil, fmt.Errorf("route %q: %w", name, err)
+		}
+		compiled = append(compiled, compiledRule)
 	}
-	return rule
+	return &Dispatcher{registry: registry, rules: compiled}, nil
 }
 
-type Decision struct {
-	Specialist     domain.SpecialistName
-	Classification string
-	Reason         string
-	NeedsIntent    bool
+func compileRule(rule RouteRule) compiledRule {
+	name := strings.TrimSpace(rule.Name)
+	compiled := compiledRule{
+		decision: domain.RoutingDecision{Specialist: rule.Specialist, Classification: strings.TrimSpace(rule.Classification), Source: domain.RoutingSourceRule, RuleName: name, Reason: "matched structured routing rule " + name},
+		sources:  compileValues(rule.Match.Sources), issueTypes: compileValues(rule.Match.IssueTypes),
+		requestTypes: compileValues(rule.Match.RequestTypes), components: compileValues(rule.Match.Components), labels: compileValues(rule.Match.Labels),
+		fields: make([]compiledField, 0, len(rule.Match.Fields)),
+	}
+	for field, values := range rule.Match.Fields {
+		compiled.fields = append(compiled.fields, compiledField{key: strings.TrimSpace(field), values: compileValues(values)})
+	}
+	// Stable field order makes early exits and dispatch cost predictable.
+	sort.Slice(compiled.fields, func(i, j int) bool { return compiled.fields[i].key < compiled.fields[j].key })
+	return compiled
 }
 
-func (d *Dispatcher) Dispatch(ticket domain.Ticket) Decision {
+func compileValues(values []string) []string {
+	result := make([]string, len(values))
+	for i, value := range values {
+		// Keep the original Unicode case for EqualFold. Lowercasing only one
+		// side changes semantics for characters such as dotted capital I.
+		result[i] = strings.TrimSpace(value)
+	}
+	return result
+}
+
+type Decision = domain.RoutingDecision
+
+func (d *Dispatcher) Dispatch(ticket domain.Ticket) domain.RoutingDecision {
 	for _, rule := range d.rules {
-		if rule.Match.matches(ticket.Metadata) {
-			return Decision{Specialist: rule.Specialist, Classification: rule.Classification, Reason: "matched Jira routing rule " + rule.Name}
+		if rule.matches(ticket) {
+			return rule.decision
 		}
 	}
-	// Ticket content is untrusted. Bound the data considered by the lightweight
-	// classifier so hostile or unusually large payloads cannot consume work. It
-	// preserves the original safe access-management route, but exact connector
-	// fields above take precedence.
-	text := strings.ToLower(bounded(ticket.Summary, 8*1024) + "\n" + bounded(ticket.Description, 8*1024))
-	for _, term := range []string{"access", "permission", "entitlement", "group membership", "license", "licence", "role assignment"} {
-		if strings.Contains(text, term) {
-			if _, ok := d.registry.Get(AccessManagement); ok {
-				return Decision{Specialist: AccessManagement, Classification: "access_management", Reason: "ticket matches access-management routing terms"}
+	return domain.RoutingDecision{Specialist: HelpDesk, Classification: "help_desk", Source: domain.RoutingSourceFallback, FallbackCode: "no_rule_match", Reason: "no structured routing rule matched; defaulting to help desk"}
+}
+
+func (r compiledRule) matches(ticket domain.Ticket) bool {
+	m := ticket.Metadata
+	if !matchesAny(string(ticket.Source), r.sources) || !matchesAny(m.IssueType, r.issueTypes) ||
+		!matchesAny(m.RequestType, r.requestTypes) || !matchesList(m.Components, r.components) || !matchesList(m.Labels, r.labels) {
+		return false
+	}
+	for _, field := range r.fields {
+		actual, ok := m.Fields[field.key]
+		if !ok {
+			for key, alternatives := range m.Fields {
+				if strings.TrimSpace(key) == field.key {
+					actual, ok = alternatives, true
+					break
+				}
 			}
 		}
+		if !ok || !matchesList(actual, field.values) {
+			return false
+		}
 	}
-	return Decision{Specialist: HelpDesk, Classification: "help_desk", Reason: "no deterministic route matched; defaulting safely to help desk", NeedsIntent: true}
-}
-
-func (m RouteMatch) matches(metadata domain.TicketMetadata) bool {
-	return matchesAny(metadata.IssueType, m.IssueTypes) &&
-		matchesAny(metadata.RequestType, m.RequestTypes) &&
-		matchesList(metadata.Components, m.Components) &&
-		matchesList(metadata.Labels, m.Labels) &&
-		matchesFields(metadata.Fields, m.Fields)
+	return true
 }
 
 func matchesAny(actual string, expected []string) bool {
 	if len(expected) == 0 {
 		return true
 	}
+	actual = strings.TrimSpace(actual)
 	for _, value := range expected {
-		if normalize(value) == normalize(actual) {
+		if strings.EqualFold(value, actual) {
 			return true
 		}
 	}
@@ -307,39 +429,13 @@ func matchesList(actual, expected []string) bool {
 	return false
 }
 
-func matchesFields(actual, expected map[string][]string) bool {
-	for field, values := range expected {
-		matched := false
-		for actualField, actualValues := range actual {
-			if normalize(actualField) == normalize(field) && matchesList(actualValues, values) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-	return true
-}
-
-func normalize(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
-
-// Candidates returns only configured specialists, in a stable order, for a
-// model intent classifier. It exposes role descriptions but never permissions.
+// Candidates returns only configured specialist names, in a stable order, for
+// a model intent classifier. It never exposes or grants permissions.
 func (d *Dispatcher) Candidates() []domain.SpecialistName {
-	profiles := d.registry.Profiles()
-	candidates := make([]domain.SpecialistName, 0, len(profiles))
-	for _, profile := range profiles {
-		candidates = append(candidates, profile.Name)
+	candidates := make([]domain.SpecialistName, 0, len(d.registry.profiles))
+	for name := range d.registry.profiles {
+		candidates = append(candidates, name)
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i] < candidates[j] })
 	return candidates
-}
-
-func bounded(value string, limit int) string {
-	if len(value) > limit {
-		return value[:limit]
-	}
-	return value
 }

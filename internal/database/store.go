@@ -75,41 +75,52 @@ func (s *Store) ReceiveTicket(ctx context.Context, ticket domain.Ticket, investi
 func (s *Store) GetInvestigation(ctx context.Context, id domain.InvestigationID) (domain.Investigation, error) {
 	var item domain.Investigation
 	err := s.pool.QueryRow(ctx, `SELECT id, ticket_id, status, model_provider, model, prompt_version, specialist,
-		diagnosis, failure, created_at, started_at, completed_at FROM investigations WHERE id = $1`, id).Scan(
+		routing, diagnosis, failure, created_at, started_at, completed_at FROM investigations WHERE id = $1`, id).Scan(
 		&item.ID, &item.TicketID, &item.Status, &item.ModelProvider, &item.Model, &item.PromptVersion,
-		&item.Specialist, &item.Diagnosis, &item.Failure, &item.CreatedAt, &item.StartedAt, &item.CompletedAt)
+		&item.Specialist, &item.Routing, &item.Diagnosis, &item.Failure, &item.CreatedAt, &item.StartedAt, &item.CompletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Investigation{}, investigations.ErrNotFound
 	}
 	return item, err
 }
 
-func (s *Store) Dispatch(ctx context.Context, id domain.InvestigationID, specialist domain.SpecialistName, classification, reason string, at time.Time) error {
-	if specialist == "" || classification == "" || reason == "" {
-		return investigations.ErrInvalidTransition
+func (s *Store) Dispatch(ctx context.Context, id domain.InvestigationID, decision domain.RoutingDecision, at time.Time) error {
+	if err := decision.Validate(); err != nil {
+		return fmt.Errorf("%w: invalid routing decision: %v", investigations.ErrInvalidTransition, err)
+	}
+	encoded, err := json.Marshal(decision)
+	if err != nil {
+		return fmt.Errorf("encode routing decision: %w", err)
 	}
 	return s.transaction(ctx, func(tx pgx.Tx) error {
-		if err := requireLease(ctx, tx, id); err != nil {
-			return err
+		var status domain.InvestigationStatus
+		var specialist domain.SpecialistName
+		var current *domain.RoutingDecision
+		err := tx.QueryRow(ctx, `SELECT status, specialist, routing FROM investigations WHERE id = $1 FOR UPDATE`, id).Scan(&status, &specialist, &current)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return investigations.ErrNotFound
 		}
-		command, err := tx.Exec(ctx, `UPDATE investigations SET specialist = $2
-			WHERE id = $1 AND status = 'PENDING' AND specialist = ''`, id, specialist)
 		if err != nil {
 			return err
 		}
-		if command.RowsAffected() == 0 {
-			var current domain.SpecialistName
-			if err := tx.QueryRow(ctx, `SELECT specialist FROM investigations WHERE id = $1`, id).Scan(&current); err != nil {
-				return err
-			}
-			if current == specialist {
+		// Acquiring the case lock can outlive a worker lease. Fence the write
+		// after that wait, even when this call is an otherwise idempotent retry.
+		if err := requireLease(ctx, tx, id); err != nil {
+			return err
+		}
+		if current != nil {
+			if current.Equal(decision) {
 				return nil
 			}
 			return investigations.ErrInvalidTransition
 		}
-		return appendEvent(ctx, tx, id, audit.DispatcherRouted, audit.ActorSystem, "dispatcher", at, map[string]any{
-			"specialist": specialist, "classification": classification, "reason": reason,
-		})
+		if status != domain.InvestigationPending || specialist != "" {
+			return investigations.ErrInvalidTransition
+		}
+		if _, err := tx.Exec(ctx, `UPDATE investigations SET specialist = $2, routing = $3 WHERE id = $1`, id, decision.Specialist, encoded); err != nil {
+			return err
+		}
+		return appendEvent(ctx, tx, id, audit.DispatcherRouted, audit.ActorSystem, "dispatcher", at, decision)
 	})
 }
 
@@ -570,7 +581,7 @@ func requireLease(ctx context.Context, tx pgx.Tx, investigationID domain.Investi
 	}
 	var valid bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1 AND investigation_id = $2
-		AND status = 'RUNNING' AND lease_owner = $3 AND attempt = $4 AND lease_expires_at > now())`,
+		AND status = 'RUNNING' AND lease_owner = $3 AND attempt = $4 AND lease_expires_at > clock_timestamp())`,
 		job.ID, investigationID, job.LeaseOwner, job.Attempt).Scan(&valid)
 	if err != nil {
 		return err

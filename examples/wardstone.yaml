@@ -16,12 +16,16 @@ specialists:
   - name: help_desk
     instructions: >-
       Investigate user-facing operational issues, gather missing facts, and
-      hand off access or entitlement work when evidence shows that domain is responsible.
+      hand off confirmed identity or entitlement work to access_management,
+      vendor risk reviews to vendor_review, and internal systems or
+      documentation questions to systems_knowledge.
     collectors:
       - google.users.get
       - google.users.list_groups
     handoff_to:
       - access_management
+      - vendor_review
+      - systems_knowledge
   - name: access_management
     instructions: >-
       Investigate identity, group membership, licensing, roles, and
@@ -32,6 +36,8 @@ specialists:
     capabilities:
       - google.groups.add_member
       - google.groups.remove_member
+    handoff_to:
+      - help_desk
   - name: vendor_review
     instructions: >-
       Prepare bounded, evidence-backed vendor security and risk reviews.
@@ -47,6 +53,12 @@ specialists:
       - help_desk
 
 routing:
+  # The model only runs after every structured rule misses. Classification
+  # selects a role; role allowlists and capability policy still govern access.
+  intent:
+    enabled: true
+    min_confidence: 0.75
+    timeout: 10s
   # Rules run in order and inspect structured Jira fields before any model
   # intent classification. Configure these values to match your Jira project.
   rules:
@@ -54,11 +66,13 @@ routing:
       specialist: access_management
       classification: access_management
       match:
+        sources: [jira]
         request_types: [Access request]
     - name: jira-vendor-security-review
       specialist: vendor_review
       classification: vendor_review
       match:
+        sources: [jira]
         issue_types: [Service Request]
         labels: [vendor]
         fields:
@@ -67,4 +81,5 @@ routing:
       specialist: systems_knowledge
       classification: systems_knowledge
       match:
+        sources: [jira]
         components: [Internal Systems]

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,6 +37,36 @@ func TestAdminWebUIIsEmbeddedAndSecurityHardened(t *testing.T) {
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "/v1/admin/overview") {
 		t.Fatalf("embedded application asset unavailable: status=%d", response.Code)
+	}
+	if response.Header().Get("Cache-Control") != "no-cache" {
+		t.Fatal("unversioned asset must revalidate after a console deployment")
+	}
+}
+
+func TestAdminHTMLPinsItsEmbeddedAssets(t *testing.T) {
+	t.Parallel()
+	server, err := NewServer(fakeService{}, fakeReader{}, "webhook-secret", "operator-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+	page := httptest.NewRecorder()
+	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/admin/", nil))
+	for _, name := range []string{"styles.css", "app.js"} {
+		content, err := webAssets.ReadFile("web/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(content)
+		path := fmt.Sprintf("assets/%s?v=%x", name, digest[:8])
+		if !strings.Contains(page.Body.String(), path) {
+			t.Fatalf("HTML does not pin embedded %s", name)
+		}
+		asset := httptest.NewRecorder()
+		handler.ServeHTTP(asset, httptest.NewRequest(http.MethodGet, "/admin/"+path, nil))
+		if asset.Code != http.StatusOK || asset.Body.String() != string(content) {
+			t.Fatalf("fingerprinted %s unavailable", name)
+		}
 	}
 }
 

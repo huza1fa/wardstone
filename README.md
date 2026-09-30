@@ -86,7 +86,11 @@ The priority order is:
 Ticket routing is deterministic-first: ordered rules use selected Jira fields
 before Wardstone asks a model for a confidence-gated intent classification.
 The model can choose only an installed specialist profile and does not receive
-any permission to act. See the example policy and [development setup](docs/development.md#jira-ticket-routing-metadata).
+any permission to act. Each case stores its original rule/model/fallback
+decision and matching audit event; later clarification or specialist handoffs
+retain that history. Operators can test Jira mappings in the console's routing
+preview without creating work or calling a model. See the example policy and
+[development setup](docs/development.md#jira-ticket-routing-metadata).
 
 We will not spend the MVP on a generic chat interface, unbounded autonomous
 execution, or a large catalog of shallow one-off automations. The useful unit

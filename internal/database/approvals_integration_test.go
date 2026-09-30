@@ -302,7 +302,10 @@ func TestSpecialistHandoffPostgres(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `UPDATE jobs SET status = 'COMPLETED', completed_at = now(), lease_owner = NULL, lease_expires_at = NULL WHERE investigation_id = $1`, investigationID)
 	})
-	if err := store.Dispatch(ctx, investigationID, specialists.HelpDesk, "help_desk", "default route", now); err != nil {
+	if err := store.Dispatch(ctx, investigationID, domain.RoutingDecision{
+		Specialist: specialists.HelpDesk, Classification: "help_desk", Source: domain.RoutingSourceFallback,
+		Reason: "default route", FallbackCode: "unclassified",
+	}, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.StartInvestigation(ctx, investigationID, now); err != nil {
