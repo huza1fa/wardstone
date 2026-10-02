@@ -72,3 +72,43 @@ type Reader interface {
 	ListInvestigations(context.Context, int) ([]InvestigationSummary, error)
 	ListApprovals(context.Context, domain.ApprovalStatus) ([]ApprovalSummary, error)
 }
+
+type SetupState string
+
+const (
+	SetupReady         SetupState = "ready"
+	SetupNotTested     SetupState = "not_tested"
+	SetupNotConfigured SetupState = "not_configured"
+	SetupFailed        SetupState = "failed"
+	SetupRequired      SetupState = "setup_required"
+	SetupDegraded      SetupState = "degraded"
+)
+
+type SetupComponent struct {
+	Name        string     `json:"name"`
+	Label       string     `json:"label"`
+	Description string     `json:"description"`
+	Permission  string     `json:"permission"`
+	Required    bool       `json:"required"`
+	Configured  bool       `json:"configured"`
+	Probeable   bool       `json:"probeable"`
+	State       SetupState `json:"state"`
+	Code        string     `json:"code"`
+	Message     string     `json:"message"`
+	CheckedAt   *time.Time `json:"checked_at,omitempty"`
+	DurationMS  int64      `json:"duration_ms,omitempty"`
+}
+
+type RuntimeFeatures struct {
+	JiraIntake     bool `json:"jira_intake"`
+	Investigations bool `json:"investigations"`
+	GoogleEvidence bool `json:"google_evidence"`
+	JiraDelivery   bool `json:"jira_delivery"`
+}
+
+type SetupStatus struct {
+	State       SetupState       `json:"state"`
+	GeneratedAt time.Time        `json:"generated_at"`
+	Features    RuntimeFeatures  `json:"features"`
+	Components  []SetupComponent `json:"components"`
+}

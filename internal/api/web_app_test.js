@@ -40,10 +40,11 @@ function harness(responses = {}) {
   const context = {
     document: { getElementById: get, createElement: (tag) => new Element(tag), querySelectorAll: () => [], addEventListener() {}, hidden: false },
     sessionStorage: { getItem: () => "", setItem() {}, removeItem() {} },
-    Headers, setInterval() {}, setTimeout() {}, clearTimeout() {},
+    Headers, AbortController, setInterval() {}, setTimeout() {}, clearTimeout() {},
     fetch: async (url, options = {}) => {
       requests.push({ url, options });
-      const result = responses[url] || {};
+      const configured = responses[url] || {};
+      const result = typeof configured === "function" ? await configured(url, options) : configured;
       return { ok: result.status == null || result.status < 400, status: result.status || 200, json: async () => result.body || {} };
     },
   };
@@ -117,4 +118,105 @@ test("legacy investigations show routing data as absent", async () => {
   get("investigation-list").listeners.click({ target: { closest: () => ({ dataset: { investigationId: "inv-legacy" } }) } });
   await settle();
   assert.ok(textOf(get("dialog-body")).includes("Routing details were not recorded"));
+});
+
+test("setup renders connector readiness as literal text", async () => {
+  const hostile = '<img src=x onerror="alert(1)">';
+  const { get, requests } = harness({
+    "/v1/admin/overview": { body: { mode: "SHADOW", investigations: {}, approvals: {}, jobs: {} } },
+    "/v1/admin/investigations?limit=100": { body: { investigations: [] } },
+    "/v1/admin/approvals?status=PENDING": { body: { approvals: [] } },
+    "/v1/admin/setup": { body: { state: "not_tested", features: { jira_intake: true }, components: [
+      { name: "model", label: "Model provider", description: hostile, permission: hostile, required: true, configured: true, probeable: true, state: "not_tested", message: hostile },
+      { name: "google", label: "Google Workspace", description: "Evidence", permission: "Directory read", configured: false, probeable: false, state: "not_configured", message: "Configuration is not present." },
+    ] } },
+  });
+  get("operator-token").value = "operator-secret";
+  await submit(get("connection-form"));
+  await settle();
+  const text = textOf(get("setup-list"));
+  assert.ok(text.includes(hostile));
+  assert.ok(text.includes("Model provider"));
+  assert.ok(text.includes("Not Configured"));
+  assert.ok(textOf(get("setup-features")).includes("Jira Intake: enabled"));
+  const request = requests.find((item) => item.url === "/v1/admin/setup");
+  assert.equal(request.options.headers.get("Authorization"), "Bearer operator-secret");
+});
+
+test("setup connection test uses fixed authenticated POST and updates result", async () => {
+  const base = {
+    "/v1/admin/overview": { body: { mode: "SHADOW", investigations: {}, approvals: {}, jobs: {} } },
+    "/v1/admin/investigations?limit=100": { body: { investigations: [] } },
+    "/v1/admin/approvals?status=PENDING": { body: { approvals: [] } },
+    "/v1/admin/setup": { body: { state: "not_tested", features: {}, components: [
+      { name: "model", label: "Model", description: "Provider", permission: "Metadata", configured: true, probeable: true, state: "not_tested", message: "Not tested." },
+    ] } },
+    "/v1/admin/setup/connectors/model/test": { body: {
+      component: { name: "model", label: "Model", description: "Provider", permission: "Metadata", configured: true, probeable: true, state: "ready", message: "Verified." },
+      setup: { state: "ready", features: {}, components: [{ name: "model", label: "Model", description: "Provider", permission: "Metadata", configured: true, probeable: true, state: "ready", message: "Verified." }] },
+    } },
+  };
+  const { get, requests } = harness(base);
+  get("operator-token").value = "operator-secret";
+  await submit(get("connection-form"));
+  await settle();
+  const button = { dataset: { setupName: "model" }, disabled: false, textContent: "Test connection" };
+  get("setup-list").listeners.click({ target: { closest: () => button } });
+  await settle();
+  const request = requests.find((item) => item.url === "/v1/admin/setup/connectors/model/test");
+  assert.equal(request.options.method, "POST");
+  assert.equal(request.options.headers.get("Authorization"), "Bearer operator-secret");
+  assert.ok(textOf(get("setup-list")).includes("Verified."));
+  assert.equal(get("setup-state").textContent, "Ready");
+  assert.equal(button.disabled, false);
+});
+
+test("stale setup refresh cannot overwrite a newer probe result", async () => {
+  let resolveSetup;
+  const setupResponse = new Promise((resolve) => { resolveSetup = resolve; });
+  const { get } = harness({
+    "/v1/admin/overview": { body: { mode: "SHADOW", investigations: {}, approvals: {}, jobs: {} } },
+    "/v1/admin/investigations?limit=100": { body: { investigations: [] } },
+    "/v1/admin/approvals?status=PENDING": { body: { approvals: [] } },
+    "/v1/admin/setup": () => setupResponse,
+    "/v1/admin/setup/connectors/model/test": { body: {
+      component: { name: "model", label: "Model", description: "Provider", permission: "Metadata", configured: true, probeable: true, state: "ready", message: "Verified." },
+      setup: { state: "ready", features: {}, components: [{ name: "model", label: "Model", description: "Provider", permission: "Metadata", configured: true, probeable: true, state: "ready", message: "Verified." }] },
+    } },
+  });
+  get("operator-token").value = "operator-secret";
+  await submit(get("connection-form"));
+  const button = { dataset: { setupName: "model" }, disabled: false, textContent: "Test connection" };
+  get("setup-list").listeners.click({ target: { closest: () => button } });
+  await settle();
+  resolveSetup({ body: { state: "not_tested", features: {}, components: [] } });
+  await settle();
+  assert.equal(get("setup-state").textContent, "Ready");
+  assert.ok(textOf(get("setup-list")).includes("Verified."));
+});
+
+test("setup serializes browser-initiated connector probes", async () => {
+  let resolveProbe;
+  const probeResponse = new Promise((resolve) => { resolveProbe = resolve; });
+  const initial = { state: "not_tested", features: {}, components: [
+    { name: "model", label: "Model", description: "Provider", permission: "Metadata", configured: true, probeable: true, state: "not_tested", message: "Not tested." },
+    { name: "google", label: "Google", description: "Directory", permission: "Read", configured: true, probeable: true, state: "not_tested", message: "Not tested." },
+  ] };
+  const { get, requests } = harness({
+    "/v1/admin/overview": { body: { mode: "SHADOW", investigations: {}, approvals: {}, jobs: {} } },
+    "/v1/admin/investigations?limit=100": { body: { investigations: [] } },
+    "/v1/admin/approvals?status=PENDING": { body: { approvals: [] } },
+    "/v1/admin/setup": { body: initial },
+    "/v1/admin/setup/connectors/model/test": () => probeResponse,
+  });
+  get("operator-token").value = "operator-secret";
+  await submit(get("connection-form"));
+  await settle();
+  const modelButton = { dataset: { setupName: "model" }, disabled: false, textContent: "Test connection" };
+  const googleButton = { dataset: { setupName: "google" }, disabled: false, textContent: "Test connection" };
+  get("setup-list").listeners.click({ target: { closest: () => modelButton } });
+  get("setup-list").listeners.click({ target: { closest: () => googleButton } });
+  assert.equal(requests.filter((item) => item.url.includes("/test")).length, 1);
+  resolveProbe({ body: { component: initial.components[0], setup: initial } });
+  await settle();
 });

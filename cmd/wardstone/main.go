@@ -11,8 +11,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/wardstone-project/wardstone/internal/admin"
+	"github.com/wardstone-project/wardstone/internal/agent"
 	"github.com/wardstone-project/wardstone/internal/api"
 	"github.com/wardstone-project/wardstone/internal/approvals"
 	"github.com/wardstone-project/wardstone/internal/capabilities"
@@ -26,6 +29,7 @@ import (
 	"github.com/wardstone-project/wardstone/internal/investigations"
 	"github.com/wardstone-project/wardstone/internal/models"
 	"github.com/wardstone-project/wardstone/internal/policy"
+	"github.com/wardstone-project/wardstone/internal/readiness"
 	"github.com/wardstone-project/wardstone/internal/specialists"
 	"github.com/wardstone-project/wardstone/internal/worker"
 )
@@ -64,33 +68,38 @@ func run(logger *slog.Logger) error {
 		MaxIdleConns: 100, MaxIdleConnsPerHost: 10, IdleConnTimeout: 90 * time.Second,
 		TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: settings.ModelTimeout,
 	}}
-	googleClient, err := google.NewHTTPClient(settings.GoogleBaseURL, settings.GoogleAccessToken, httpClient)
-	if err != nil {
-		return err
+	var googleClient *google.HTTPClient
+	collectors := make([]connectors.EvidenceCollector, 0, 2)
+	if settings.GoogleConfigured() {
+		googleClient, err = google.NewHTTPClient(settings.GoogleBaseURL, settings.GoogleAccessToken, httpClient)
+		if err != nil {
+			return err
+		}
+		collectors = append(collectors, google.UserCollector{Client: googleClient}, google.GroupCollector{Client: googleClient})
 	}
-	model, err := models.NewOpenAICompatible(settings.OpenAIBaseURL, settings.OpenAIAPIKey, settings.OpenAIModel, httpClient)
-	if err != nil {
-		return err
+	var model *models.OpenAICompatible
+	if settings.ModelConfigured() {
+		model, err = models.NewOpenAICompatible(settings.OpenAIBaseURL, settings.OpenAIAPIKey, settings.OpenAIModel, httpClient)
+		if err != nil {
+			return err
+		}
 	}
-	jiraClient, err := jira.NewClient(settings.JiraBaseURL, settings.JiraEmail, settings.JiraAPIToken, httpClient)
-	if err != nil {
-		return err
-	}
-	deliveryDispatcher, err := delivery.NewDispatcher(store, jiraClient, logger, delivery.Config{
-		Lease: settings.JobLease, PollInterval: 500 * time.Millisecond, MaxAttempts: 5,
-	})
-	if err != nil {
-		return err
-	}
-	collectors := []connectors.EvidenceCollector{
-		google.UserCollector{Client: googleClient},
-		google.GroupCollector{Client: googleClient},
+	var jiraClient *jira.Client
+	if settings.JiraConfigured() {
+		jiraClient, err = jira.NewClient(settings.JiraBaseURL, settings.JiraEmail, settings.JiraAPIToken, httpClient)
+		if err != nil {
+			return err
+		}
 	}
 	specialistRegistry, err := specialists.NewRegistry(settings.Specialists...)
 	if err != nil {
 		return err
 	}
-	service, err := investigations.NewService(store, collectors, model, registry, policyEvaluator, investigations.Config{
+	modelProvider := agent.ModelProvider(routingOnlyModel{})
+	if model != nil {
+		modelProvider = model
+	}
+	service, err := investigations.NewService(store, collectors, modelProvider, registry, policyEvaluator, investigations.Config{
 		MaxConcurrentCollectors:  settings.MaxCollectors,
 		CollectorTimeout:         settings.CollectorTimeout,
 		ModelTimeout:             settings.ModelTimeout,
@@ -105,16 +114,40 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	workerPool, err := worker.NewPool(store, service, logger, settings.Workers, settings.JobLease, 500*time.Millisecond)
-	if err != nil {
-		return err
+	var workerPool *worker.Pool
+	if model != nil {
+		workerPool, err = worker.NewPool(store, service, logger, settings.Workers, settings.JobLease, 500*time.Millisecond)
+		if err != nil {
+			return err
+		}
+	}
+	var deliveryDispatcher *delivery.Dispatcher
+	if jiraClient != nil && settings.Mode != domain.OperatingModeShadow {
+		deliveryDispatcher, err = delivery.NewDispatcher(store, jiraClient, logger, delivery.Config{
+			Lease: settings.JobLease, PollInterval: 500 * time.Millisecond, MaxAttempts: 5,
+		})
+		if err != nil {
+			return err
+		}
 	}
 	approvalService, err := approvals.NewService(store, settings.ApprovalLifetime)
 	if err != nil {
 		return err
 	}
-	apiServer, err := api.NewServer(service, store, settings.JiraWebhookSecret, settings.OperatorToken,
-		api.WithAdmin(store, approvalService, settings.Mode), api.WithConversations(service), api.WithRoutingPreview(service))
+	setupService, err := readiness.New(setupChecks(settings, pool, jiraClient, googleClient, model), admin.RuntimeFeatures{
+		JiraIntake: settings.JiraInboundConfigured() && model != nil, Investigations: model != nil,
+		GoogleEvidence: googleClient != nil && model != nil, JiraDelivery: deliveryDispatcher != nil,
+	}, 5*time.Second, logger)
+	if err != nil {
+		return err
+	}
+	options := []api.Option{api.WithAdmin(store, approvalService, settings.Mode), api.WithSetup(setupService), api.WithRoutingPreview(service)}
+	var intake api.InvestigationService
+	if model != nil {
+		intake = service
+		options = append(options, api.WithConversations(service))
+	}
+	apiServer, err := api.NewServer(intake, store, settings.JiraWebhookSecret, settings.OperatorToken, options...)
 	if err != nil {
 		return err
 	}
@@ -133,20 +166,24 @@ func run(logger *slog.Logger) error {
 		}
 		return err
 	})
-	group.Go(func() error {
-		err := workerPool.Run(ctx)
-		if errors.Is(err, context.Canceled) {
-			return nil
-		}
-		return err
-	})
-	group.Go(func() error {
-		err := deliveryDispatcher.Run(ctx)
-		if errors.Is(err, context.Canceled) {
-			return nil
-		}
-		return err
-	})
+	if workerPool != nil {
+		group.Go(func() error {
+			err := workerPool.Run(ctx)
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		})
+	}
+	if deliveryDispatcher != nil {
+		group.Go(func() error {
+			err := deliveryDispatcher.Run(ctx)
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		})
+	}
 	group.Go(func() error {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -154,4 +191,48 @@ func run(logger *slog.Logger) error {
 		return httpServer.Shutdown(shutdownCtx)
 	})
 	return group.Wait()
+}
+
+// routingOnlyModel allows deterministic routing preview while workers and Jira
+// intake remain disabled. Diagnose is unreachable because no worker is started.
+type routingOnlyModel struct{}
+
+func (routingOnlyModel) Name() domain.ModelProviderName { return "unconfigured" }
+func (routingOnlyModel) Model() string                  { return "unconfigured" }
+func (routingOnlyModel) Diagnose(context.Context, agent.Request) (agent.Result, error) {
+	return agent.Result{}, errors.New("model provider is not configured")
+}
+
+func setupChecks(settings config.Config, pool *pgxpool.Pool, jiraClient *jira.Client, googleClient *google.HTTPClient, model *models.OpenAICompatible) []readiness.Check {
+	databaseProbe := func(ctx context.Context) error {
+		err := database.CheckSchema(ctx, pool)
+		if database.IsSchemaMismatch(err) {
+			return connectors.NewProbeError(connectors.ProbeSchemaMismatch)
+		}
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+			return connectors.NewProbeError(connectors.ProbeUnavailable)
+		}
+		return nil
+	}
+	checks := []readiness.Check{
+		{Name: "database", Label: "PostgreSQL", Description: "Durable control-plane storage and schema.", Permission: "Connect and read/write Wardstone runtime tables.", Required: true, Configured: true, Probe: databaseProbe, Ready: true, ReadyCode: "ready", ReadyMessage: "Connected with the expected schema."},
+		{Name: "policy", Label: "Policy and specialists", Description: "Administrator-owned capability, specialist, and routing configuration.", Permission: "Read the configured YAML file at startup.", Required: true, Configured: true, Ready: true, ReadyCode: "loaded", ReadyMessage: "Configuration loaded and validated."},
+		{Name: "jira_inbound", Label: "Jira intake", Description: "Authenticated ticket and requester-reply webhooks.", Permission: "A distinct shared webhook secret; Jira Automation is configured separately.", Required: true, Configured: settings.JiraInboundConfigured(), Ready: settings.JiraInboundConfigured(), ReadyCode: "configured", ReadyMessage: "Webhook authentication is configured; delivery from Jira cannot be tested from Wardstone."},
+		{Name: "jira", Label: "Jira API", Description: "Readiness for reviewed requester-message delivery.", Permission: "Dedicated Jira account; Add comments is not used in SHADOW mode.", Configured: jiraClient != nil},
+		{Name: "google", Label: "Google Workspace", Description: "Read-only user and group evidence collection.", Permission: "Directory user and group read scopes.", Configured: googleClient != nil},
+		{Name: "model", Label: "Model provider", Description: "OpenAI-compatible diagnosis and intent classification.", Permission: "Read configured model metadata; no ticket content is sent by this test.", Required: true, Configured: model != nil},
+	}
+	if jiraClient != nil {
+		checks[3].Probe = jiraClient.Probe
+	}
+	if googleClient != nil {
+		checks[4].Probe = googleClient.Probe
+	}
+	if model != nil {
+		checks[5].Probe = model.Probe
+	}
+	return checks
 }

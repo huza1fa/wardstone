@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/wardstone-project/wardstone/internal/agent"
+	"github.com/wardstone-project/wardstone/internal/connectors"
 )
 
 func TestOpenAICompatibleRejectsTrailingModelJSON(t *testing.T) {
@@ -25,6 +26,66 @@ func TestOpenAICompatibleRejectsTrailingModelJSON(t *testing.T) {
 	}
 	if _, err := provider.Diagnose(context.Background(), agent.Request{}); err == nil {
 		t.Fatal("expected trailing model JSON to be rejected")
+	}
+}
+
+func TestProbeReadsConfiguredModelMetadata(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.EscapedPath() != "/models/team%2Fmodel" || request.Header.Get("Authorization") != "Bearer test-key" {
+			t.Fatalf("unexpected probe: %s %s auth=%q", request.Method, request.URL.EscapedPath(), request.Header.Get("Authorization"))
+		}
+		_, _ = writer.Write([]byte(`{"id":"team/model"}`))
+	}))
+	defer server.Close()
+	provider, err := NewOpenAICompatible(server.URL, "test-key", "team/model", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Probe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProbeClassifiesMissingModel(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNotFound)
+		_, _ = writer.Write([]byte("private provider response"))
+	}))
+	defer server.Close()
+	provider, err := NewOpenAICompatible(server.URL, "", "missing", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = provider.Probe(context.Background())
+	if failure, ok := connectors.ProbeFailureOf(err); !ok || failure != connectors.ProbeNotFound || err.Error() != "not_found" {
+		t.Fatalf("probe error = %v", err)
+	}
+}
+
+func TestProbeRejectsMismatchedModelMetadata(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte(`{"id":"different-model"}`))
+	}))
+	defer server.Close()
+	provider, err := NewOpenAICompatible(server.URL, "", "expected-model", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = provider.Probe(context.Background())
+	if failure, ok := connectors.ProbeFailureOf(err); !ok || failure != connectors.ProbeInvalidResponse {
+		t.Fatalf("probe error = %v", err)
+	}
+}
+
+func TestProviderRejectsUnsafeBaseURL(t *testing.T) {
+	t.Parallel()
+	for _, endpoint := range []string{"http://model.example.test", "https://user:secret@model.example.test", "https://model.example.test#fragment"} {
+		if _, err := NewOpenAICompatible(endpoint, "key", "model", http.DefaultClient); err == nil {
+			t.Fatalf("accepted unsafe endpoint %q", endpoint)
+		}
 	}
 }
 

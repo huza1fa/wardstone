@@ -7,11 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
-	"strings"
 
+	"github.com/wardstone-project/wardstone/internal/connectors"
 	"github.com/wardstone-project/wardstone/internal/domain"
 )
 
@@ -28,15 +27,42 @@ func NewClient(baseURL, email, apiToken string, httpClient *http.Client) (*Clien
 	if email == "" || apiToken == "" || httpClient == nil {
 		return nil, errors.New("Jira base URL, email, API token, and HTTP client are required")
 	}
-	parsed, err := url.Parse(baseURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, errors.New("Jira base URL must be an absolute origin without credentials, query, or fragment")
+	parsed, err := connectors.ParseBaseURL("Jira", baseURL)
+	if err != nil {
+		return nil, err
 	}
-	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopbackHost(parsed.Hostname())) {
-		return nil, errors.New("Jira base URL must use HTTPS unless it is a loopback development endpoint")
+	return &Client{baseURL: parsed, email: email, apiToken: apiToken, httpClient: connectors.NoRedirectClient(httpClient)}, nil
+}
+
+func (c *Client) Probe(ctx context.Context) error {
+	endpoint := *c.baseURL
+	endpoint.Path = c.baseURL.Path + "/rest/api/3/myself"
+	endpoint.RawPath = ""
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return connectors.NewProbeError(connectors.ProbeInvalidResponse)
 	}
-	parsed.Path = strings.TrimRight(parsed.Path, "/")
-	return &Client{baseURL: parsed, email: email, apiToken: apiToken, httpClient: httpClient}, nil
+	request.Header.Set("Accept", "application/json")
+	request.SetBasicAuth(c.email, c.apiToken)
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return connectors.NewProbeError(connectors.ProbeUnavailable)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return connectors.NewProbeError(connectors.ProbeFailureForStatus(response.StatusCode))
+	}
+	var identity struct {
+		AccountID string `json:"accountId"`
+	}
+	if err := connectors.DecodeProbeResponse(response.Body, &identity); err != nil || identity.AccountID == "" {
+		return connectors.NewProbeError(connectors.ProbeInvalidResponse)
+	}
+	return nil
 }
 
 func (c *Client) SendRequesterMessage(ctx context.Context, ticket domain.Ticket, message domain.CaseMessage) (string, error) {
@@ -89,11 +115,3 @@ type sendError struct {
 func (e sendError) Error() string   { return e.err.Error() }
 func (e sendError) Unwrap() error   { return e.err }
 func (e sendError) Retryable() bool { return e.retryable }
-
-func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	address := net.ParseIP(host)
-	return address != nil && address.IsLoopback()
-}

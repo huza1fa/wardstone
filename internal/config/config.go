@@ -95,13 +95,39 @@ func Load() (Config, error) {
 	if config.Mode != domain.OperatingModeShadow {
 		return Config{}, fmt.Errorf("only SHADOW mode is implemented; got %s", config.Mode)
 	}
-	if config.DatabaseURL == "" || config.JiraWebhookSecret == "" || config.JiraBaseURL == "" || config.JiraEmail == "" || config.JiraAPIToken == "" || config.OperatorToken == "" || config.GoogleAccessToken == "" || config.OpenAIModel == "" {
-		return Config{}, errors.New("WARDSTONE_DATABASE_URL, WARDSTONE_JIRA_WEBHOOK_SECRET, WARDSTONE_JIRA_BASE_URL, WARDSTONE_JIRA_EMAIL, WARDSTONE_JIRA_API_TOKEN, WARDSTONE_OPERATOR_TOKEN, WARDSTONE_GOOGLE_ACCESS_TOKEN, and WARDSTONE_OPENAI_MODEL are required")
+	if config.DatabaseURL == "" || config.OperatorToken == "" {
+		return Config{}, errors.New("WARDSTONE_DATABASE_URL and WARDSTONE_OPERATOR_TOKEN are required")
+	}
+	if configured := countConfigured(config.JiraBaseURL, config.JiraEmail, config.JiraAPIToken); configured != 0 && configured != 3 {
+		return Config{}, errors.New("WARDSTONE_JIRA_BASE_URL, WARDSTONE_JIRA_EMAIL, and WARDSTONE_JIRA_API_TOKEN must be configured together")
+	}
+	if config.OpenAIModel == "" && config.OpenAIAPIKey != "" {
+		return Config{}, errors.New("WARDSTONE_OPENAI_MODEL is required when WARDSTONE_OPENAI_API_KEY is configured")
 	}
 	if config.Workers < 1 || config.MaxCollectors < 1 || config.MaxHandoffs < 1 || config.MaxFollowUpQuestions < 1 {
 		return Config{}, errors.New("worker, collector, handoff, and follow-up question limits must be positive")
 	}
 	return config, nil
+}
+
+func (c Config) JiraInboundConfigured() bool { return c.JiraWebhookSecret != "" }
+
+func (c Config) JiraConfigured() bool {
+	return c.JiraBaseURL != "" && c.JiraEmail != "" && c.JiraAPIToken != ""
+}
+
+func (c Config) GoogleConfigured() bool { return c.GoogleAccessToken != "" }
+
+func (c Config) ModelConfigured() bool { return c.OpenAIModel != "" }
+
+func countConfigured(values ...string) int {
+	configured := 0
+	for _, value := range values {
+		if value != "" {
+			configured++
+		}
+	}
+	return configured
 }
 
 func loadPolicy(path string, config *Config) error {

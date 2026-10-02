@@ -42,10 +42,14 @@ the same durable investigation. When enough context exists, Wardstone produces
 an evidence-backed diagnosis and proposed actions; policy evaluates each
 proposal. No state-changing action is executed in this mode.
 
-The next product work is onboarding and connector setup, then bounded skills
-for the three proof points: interactive helpdesk work, access management, and
-vendor review. Slack remains an important requester/approval surface, but it is
-not a prerequisite for the core case lifecycle.
+The admin console now exposes an onboarding and connector-readiness foundation:
+Wardstone can start with Jira, Google, and the model unconfigured, explains the
+resulting feature availability, and runs explicit read-only connection tests.
+Credentials remain environment-managed and are never entered into or returned
+by the browser. The next product work is bounded skills for the three proof
+points: interactive helpdesk work, access management, and vendor review. Slack
+remains an important requester/approval surface, but it is not a prerequisite
+for the core case lifecycle.
 
 ## Jira development setup
 
@@ -76,8 +80,9 @@ The priority order is:
 
 1. Durable case context and requester conversations — **implemented in this
    slice**.
-2. An admin onboarding flow that connects systems, scopes credentials, tests
-   read access, and explains the resulting permissions.
+2. An admin onboarding flow that scopes environment-managed credentials, tests
+   read access, and explains resulting permissions — **readiness foundation
+   implemented; managed credential provisioning remains future work**.
 3. Bounded, testable investigation skills for helpdesk, IAM, vendor risk, and
    systems knowledge; each returns an evidence-backed work package.
 4. Data classification, model-routing controls, approval/execution, and a
@@ -103,7 +108,8 @@ Wardstone exposes two operator views backed by the same authenticated admin
 API:
 
 - a responsive web console at `/admin/` for service status, investigation
-  history, audit timelines, and approval requests; and
+  history, connector setup/readiness, audit timelines, and approval requests;
+  and
 - a Charm-based terminal console with overview, investigation, and approval
   views.
 

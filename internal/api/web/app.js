@@ -6,6 +6,7 @@
     actor: sessionStorage.getItem("wardstone.operatorActor") || "",
     investigations: [],
     approvals: [],
+    setup: null,
   };
   const byId = (id) => document.getElementById(id);
   const connection = byId("connection");
@@ -16,6 +17,8 @@
   const sessionButton = byId("session-button");
   const toast = byId("toast");
   let toastTimer;
+  let setupRevision = 0;
+  let activeSetupProbe = "";
 
   function node(tag, options = {}, children = []) {
     const element = document.createElement(tag);
@@ -76,6 +79,7 @@
       sessionButton.textContent = "Disconnect";
       refreshButton.disabled = false;
       byId("last-updated").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+      loadSetup({ quiet });
     } catch (error) {
       refreshButton.disabled = false;
       if (error.status === 401) {
@@ -85,6 +89,88 @@
         connectionError.textContent = error.message;
         showToast(error.message);
       }
+    }
+  }
+
+  async function loadSetup({ quiet = false } = {}) {
+    if (activeSetupProbe) return;
+    const revision = ++setupRevision;
+    const sessionToken = state.token;
+    try {
+      const setup = await api("/v1/admin/setup");
+      if (state.token !== sessionToken || revision !== setupRevision) return;
+      state.setup = setup;
+      byId("setup-error").textContent = "";
+      renderSetup();
+    } catch (error) {
+      if (state.token !== sessionToken || revision !== setupRevision) return;
+      if (error.status === 401) {
+        disconnect();
+        connectionError.textContent = "The operator token was not accepted.";
+      } else {
+        byId("setup-error").textContent = error.message;
+        if (!quiet) showToast(error.message);
+      }
+    }
+  }
+
+  function renderSetup() {
+    const setup = state.setup || {};
+    const overall = String(setup.state || "unknown");
+    const stateBadge = byId("setup-state");
+    stateBadge.className = `setup-state ${overall}`;
+    stateBadge.textContent = humanize(overall);
+    const features = byId("setup-features");
+    features.replaceChildren();
+    for (const [name, enabled] of Object.entries(setup.features || {})) {
+      features.append(node("span", { className: `feature ${enabled ? "enabled" : "disabled"}`, text: `${humanize(name)}: ${enabled ? "enabled" : "disabled"}` }));
+    }
+    const list = byId("setup-list");
+    list.replaceChildren();
+    for (const component of setup.components || []) {
+      const componentState = String(component.state || "unknown");
+      const header = node("div", { className: "setup-card-head" }, [
+        node("div", {}, [node("p", { className: "setup-requirement", text: component.required ? "Required" : "Optional" }), node("h3", { text: component.label || component.name })]),
+        node("span", { className: `status ${componentState}`, text: humanize(componentState) }),
+      ]);
+      const children = [
+        header,
+        node("p", { className: "setup-description", text: component.description || "" }),
+        node("p", { className: "setup-permission", text: component.permission || "" }),
+        node("p", { className: "setup-message", text: component.message || "" }),
+      ];
+      if (component.checked_at) children.push(node("small", { className: "setup-checked", text: `Tested ${formatDate(component.checked_at)}${component.duration_ms ? ` · ${component.duration_ms} ms` : ""}` }));
+      if (component.configured && component.probeable) children.push(node("button", { className: "button ghost setup-test", type: "button", disabled: Boolean(activeSetupProbe), text: activeSetupProbe === component.name ? "Testing…" : "Test connection", "data-setup-name": component.name }));
+      list.append(node("article", { className: "setup-card" }, children));
+    }
+  }
+
+  async function testSetupConnection(button) {
+    if (activeSetupProbe) return;
+    const name = button.dataset.setupName;
+    const sessionToken = state.token;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6500);
+    const revision = ++setupRevision;
+    activeSetupProbe = name;
+    button.disabled = true;
+    button.textContent = "Testing…";
+    byId("setup-error").textContent = "";
+    renderSetup();
+    try {
+      const response = await api(`/v1/admin/setup/connectors/${encodeURIComponent(name)}/test`, { method: "POST", signal: controller.signal });
+      if (state.token !== sessionToken || revision !== setupRevision) return;
+      state.setup = response.setup || state.setup;
+    } catch (error) {
+      if (state.token !== sessionToken || revision !== setupRevision) return;
+      if (error.status === 401) disconnect();
+      else byId("setup-error").textContent = error.name === "AbortError" ? "The connection test timed out." : error.message;
+    } finally {
+      clearTimeout(timeout);
+      if (revision === setupRevision) activeSetupProbe = "";
+      button.disabled = false;
+      button.textContent = "Test connection";
+      if (state.token === sessionToken && revision === setupRevision) renderSetup();
     }
   }
 
@@ -281,9 +367,12 @@
   }
 
   function disconnect() {
+    setupRevision++;
+    activeSetupProbe = "";
     state.token = "";
     state.investigations = [];
     state.approvals = [];
+    state.setup = null;
     sessionStorage.removeItem("wardstone.operatorToken");
     tokenInput.value = "";
     connection.hidden = false;
@@ -292,6 +381,9 @@
     refreshButton.disabled = true;
     byId("routing-preview-result").replaceChildren();
     byId("routing-preview-error").textContent = "";
+    byId("setup-list").replaceChildren();
+    byId("setup-features").replaceChildren();
+    byId("setup-error").textContent = "";
     byId("investigation-dialog").close();
     byId("decision-dialog").close();
   }
@@ -338,6 +430,10 @@
   byId("investigation-list").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-investigation-id]");
     if (button) showInvestigation(button.dataset.investigationId);
+  });
+  byId("setup-list").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-setup-name]");
+    if (button) testSetupConnection(button);
   });
   byId("dialog-close").addEventListener("click", () => byId("investigation-dialog").close());
   document.querySelectorAll(".dialog-cancel").forEach((button) => button.addEventListener("click", () => byId("decision-dialog").close()));

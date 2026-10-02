@@ -32,6 +32,76 @@ func TestLoadPolicy(t *testing.T) {
 	}
 }
 
+func TestLoadAllowsUnconfiguredConnectors(t *testing.T) {
+	clearRuntimeEnvironment(t)
+	t.Setenv("WARDSTONE_CONFIG_FILE", "testdata/valid.yaml")
+	t.Setenv("WARDSTONE_DATABASE_URL", "postgres://example.test/wardstone")
+	t.Setenv("WARDSTONE_OPERATOR_TOKEN", "operator-secret")
+	config, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.JiraInboundConfigured() || config.JiraConfigured() || config.GoogleConfigured() || config.ModelConfigured() {
+		t.Fatalf("unexpected configured connectors: %+v", config)
+	}
+}
+
+func TestLoadRejectsPartialConnectorConfiguration(t *testing.T) {
+	for name, values := range map[string]map[string]string{
+		"Jira base only":          {"WARDSTONE_JIRA_BASE_URL": "https://example.atlassian.net"},
+		"Jira missing token":      {"WARDSTONE_JIRA_BASE_URL": "https://example.atlassian.net", "WARDSTONE_JIRA_EMAIL": "bot@example.test"},
+		"model key without model": {"WARDSTONE_OPENAI_API_KEY": "secret"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearRuntimeEnvironment(t)
+			t.Setenv("WARDSTONE_CONFIG_FILE", "testdata/valid.yaml")
+			t.Setenv("WARDSTONE_DATABASE_URL", "postgres://example.test/wardstone")
+			t.Setenv("WARDSTONE_OPERATOR_TOKEN", "operator-secret")
+			for key, value := range values {
+				t.Setenv(key, value)
+			}
+			if _, err := Load(); err == nil {
+				t.Fatal("expected partial configuration to be rejected")
+			}
+		})
+	}
+}
+
+func TestLoadReportsConfiguredConnectorGroups(t *testing.T) {
+	clearRuntimeEnvironment(t)
+	for key, value := range map[string]string{
+		"WARDSTONE_CONFIG_FILE":         "testdata/valid.yaml",
+		"WARDSTONE_DATABASE_URL":        "postgres://example.test/wardstone",
+		"WARDSTONE_OPERATOR_TOKEN":      "operator-secret",
+		"WARDSTONE_JIRA_WEBHOOK_SECRET": "webhook-secret",
+		"WARDSTONE_JIRA_BASE_URL":       "https://example.atlassian.net",
+		"WARDSTONE_JIRA_EMAIL":          "bot@example.test",
+		"WARDSTONE_JIRA_API_TOKEN":      "jira-secret",
+		"WARDSTONE_GOOGLE_ACCESS_TOKEN": "google-secret",
+		"WARDSTONE_OPENAI_MODEL":        "test-model",
+	} {
+		t.Setenv(key, value)
+	}
+	config, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.JiraInboundConfigured() || !config.JiraConfigured() || !config.GoogleConfigured() || !config.ModelConfigured() {
+		t.Fatalf("configured groups not detected: %+v", config)
+	}
+}
+
+func clearRuntimeEnvironment(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"WARDSTONE_CONFIG_FILE", "WARDSTONE_DATABASE_URL", "WARDSTONE_OPERATOR_TOKEN", "WARDSTONE_MODE",
+		"WARDSTONE_JIRA_WEBHOOK_SECRET", "WARDSTONE_JIRA_BASE_URL", "WARDSTONE_JIRA_EMAIL", "WARDSTONE_JIRA_API_TOKEN",
+		"WARDSTONE_GOOGLE_ACCESS_TOKEN", "WARDSTONE_OPENAI_BASE_URL", "WARDSTONE_OPENAI_API_KEY", "WARDSTONE_OPENAI_MODEL",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
 func TestIntentConfigurationDefaultsAndOverrides(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

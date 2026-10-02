@@ -290,6 +290,24 @@ No Slack approval is requested and no Google mutation is possible in this
 milestone. Approval and executor contracts/schema exist to make the later path
 explicit, not active.
 
+### Setup and connector readiness
+
+PostgreSQL, the policy file, and the operator token form the bootstrap control
+plane. Jira, Google Workspace, and the model provider are optional connector
+groups; partial credential groups are rejected rather than silently ignored.
+Without a model the HTTP/admin control plane remains available, but intake is
+disabled and workers do not claim pending jobs.
+
+The authenticated setup API returns configuration presence, enabled runtime
+features, and sanitized cached probe outcomes. A status read performs no
+external I/O. Operators explicitly start a bounded read-only probe for one
+fixed connector name; arbitrary URLs, credentials, and probe arguments are not
+accepted from the browser. Probes reject redirects, bound response bodies,
+validate response shape, suppress upstream bodies/errors, prevent concurrent
+duplicates, and apply a short per-connector cooldown. Secrets remain in process
+configuration and are never returned through the API. Each completed probe logs
+only its fixed component name, stable result code, and duration.
+
 ## Failure, cancellation, timeout, and retry design
 
 | Boundary | Behavior |

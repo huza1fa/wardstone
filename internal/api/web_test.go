@@ -35,7 +35,7 @@ func TestAdminWebUIIsEmbeddedAndSecurityHardened(t *testing.T) {
 	request = httptest.NewRequest(http.MethodGet, "/admin/assets/app.js", nil)
 	response = httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "/v1/admin/overview") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "/v1/admin/overview") || !strings.Contains(response.Body.String(), "/v1/admin/setup") {
 		t.Fatalf("embedded application asset unavailable: status=%d", response.Code)
 	}
 	if response.Header().Get("Cache-Control") != "no-cache" {

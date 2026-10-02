@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/wardstone-project/wardstone/internal/agent"
+	"github.com/wardstone-project/wardstone/internal/connectors"
 	"github.com/wardstone-project/wardstone/internal/domain"
 )
 
@@ -25,14 +27,44 @@ func NewOpenAICompatible(baseURL, apiKey, model string, httpClient *http.Client)
 	if baseURL == "" || model == "" || httpClient == nil {
 		return nil, errors.New("model base URL, model name, and HTTP client are required")
 	}
-	// A provider redirect must not resend a ticket, evidence, or credential to
-	// another endpoint. Copy the client so other connector clients are unaffected.
-	client := *httpClient
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &OpenAICompatible{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, model: model, httpClient: &client}, nil
+	parsed, err := connectors.ParseBaseURL("model", baseURL)
+	if err != nil {
+		return nil, err
+	}
+	return &OpenAICompatible{baseURL: parsed.String(), apiKey: apiKey, model: model, httpClient: connectors.NoRedirectClient(httpClient)}, nil
 }
 func (*OpenAICompatible) Name() domain.ModelProviderName { return "openai-compatible" }
 func (p *OpenAICompatible) Model() string                { return p.model }
+
+func (p *OpenAICompatible) Probe(ctx context.Context) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/models/"+url.PathEscape(p.model), nil)
+	if err != nil {
+		return connectors.NewProbeError(connectors.ProbeInvalidResponse)
+	}
+	request.Header.Set("Accept", "application/json")
+	if p.apiKey != "" {
+		request.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+	response, err := p.httpClient.Do(request)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return connectors.NewProbeError(connectors.ProbeUnavailable)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return connectors.NewProbeError(connectors.ProbeFailureForStatus(response.StatusCode))
+	}
+	var metadata struct {
+		ID string `json:"id"`
+	}
+	if err := connectors.DecodeProbeResponse(response.Body, &metadata); err != nil || metadata.ID != p.model {
+		return connectors.NewProbeError(connectors.ProbeInvalidResponse)
+	}
+	return nil
+}
 
 func (p *OpenAICompatible) Diagnose(ctx context.Context, request agent.Request) (agent.Result, error) {
 	content, err := p.complete(ctx, systemPrompt, request, 8<<20)

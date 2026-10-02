@@ -61,6 +61,13 @@ The Go process intentionally does not load `.env` files. Export the values from
 `WARDSTONE_CONFIG_FILE` to the capability policy file; the example environment
 uses `examples/wardstone.yaml`.
 
+`WARDSTONE_DATABASE_URL`, `WARDSTONE_OPERATOR_TOKEN`, and
+`WARDSTONE_CONFIG_FILE` are the bootstrap requirements. Jira intake, Jira API,
+Google Workspace, and the model provider may be configured independently. A
+partially configured Jira API group is rejected: base URL, account email, and
+API token must be supplied together. Workers do not start until a model is
+configured, so pending jobs are not consumed by an incomplete installation.
+
 ## Admin web console
 
 Start Wardstone, then open `http://127.0.0.1:8080/admin/` (or the configured
@@ -73,6 +80,19 @@ diagnoses and timelines, and pending approval requests. Browser and terminal
 approval decisions both use the same authenticated API and approval service.
 Wardstone is still restricted to SHADOW mode, so the approval queue normally
 remains empty in the current milestone.
+
+The Setup section reports which runtime features are enabled and which
+credentials are present without returning secret values. Live connection tests
+are operator-authenticated, manually initiated, read only, limited to one
+in-flight test per connector, and bounded to five seconds. Jira tests the
+authenticated identity endpoint, Google requests one basic directory user,
+and the model provider reads metadata for the configured model. Provider
+redirects are not followed. Jira Automation webhook delivery cannot be tested
+from Wardstone and is reported as locally configured only.
+
+The corresponding authenticated endpoints are `GET /v1/admin/setup` and
+`POST /v1/admin/setup/connectors/{name}/test`. `/healthz` remains a public
+liveness endpoint and intentionally exposes no connector information.
 
 ## Jira connector configuration
 

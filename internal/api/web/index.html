@@ -19,6 +19,7 @@
       </a>
       <nav aria-label="Admin navigation">
         <a class="nav-item active" href="#overview" aria-label="Overview"><span aria-hidden="true">⌂</span><span>Overview</span></a>
+        <a class="nav-item" href="#setup" aria-label="Setup"><span aria-hidden="true">⚙</span><span>Setup</span></a>
         <a class="nav-item" href="#approvals" aria-label="Approvals"><span aria-hidden="true">✓</span><span>Approvals</span> <span id="approval-badge" class="nav-badge" hidden>0</span></a>
         <a class="nav-item" href="#investigations" aria-label="Investigations"><span aria-hidden="true">⌕</span><span>Investigations</span></a>
         <a class="nav-item" href="#routing-preview" aria-label="Routing preview"><span aria-hidden="true">⇢</span><span>Routing preview</span></a>
@@ -69,6 +70,19 @@
             <article class="metric-card"><span class="metric-icon green" aria-hidden="true">✓</span><div><p>Completed</p><strong id="metric-completed">—</strong><small id="metric-completed-note">Investigations</small></div></article>
             <article class="metric-card"><span class="metric-icon red" aria-hidden="true">×</span><div><p>Needs attention</p><strong id="metric-attention">—</strong><small>Failed investigations + jobs</small></div></article>
           </div>
+        </section>
+
+        <section id="setup" aria-labelledby="setup-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">Connection readiness</p><h2 id="setup-title">Setup</h2></div>
+            <span id="setup-state" class="setup-state">Loading</span>
+          </div>
+          <div class="setup-intro">
+            <p>Credentials remain in the server environment. Tests are explicit, read only, and never return configured values or provider response bodies.</p>
+            <div id="setup-features" class="feature-list" aria-label="Enabled runtime features"></div>
+          </div>
+          <p id="setup-error" class="form-error" role="alert"></p>
+          <div id="setup-list" class="setup-grid" aria-live="polite"></div>
         </section>
 
         <section id="approvals" aria-labelledby="approvals-title">

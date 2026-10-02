@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wardstone-project/wardstone/internal/admin"
 	"github.com/wardstone-project/wardstone/internal/audit"
 	"github.com/wardstone-project/wardstone/internal/connectors/jira"
 	"github.com/wardstone-project/wardstone/internal/domain"
@@ -38,6 +39,11 @@ type RoutingPreviewer interface {
 	PreviewRouting(context.Context, domain.Ticket) (domain.RoutingDecision, error)
 }
 
+type SetupService interface {
+	Status(context.Context) (admin.SetupStatus, error)
+	Probe(context.Context, string) (admin.SetupComponent, error)
+}
+
 type Server struct {
 	service        InvestigationService
 	reader         InvestigationReader
@@ -45,10 +51,21 @@ type Server struct {
 	approvals      ApprovalService
 	conversations  ConversationService
 	routingPreview RoutingPreviewer
+	setup          SetupService
 	mode           domain.OperatingMode
 	webhookSecret  string
 	operatorToken  string
 	now            func() time.Time
+}
+
+func WithSetup(service SetupService) Option {
+	return func(server *Server) error {
+		if service == nil {
+			return errors.New("setup service is required")
+		}
+		server.setup = service
+		return nil
+	}
 }
 
 func WithRoutingPreview(previewer RoutingPreviewer) Option {
@@ -89,8 +106,8 @@ func WithAdmin(reader AdminReader, approvals ApprovalService, mode domain.Operat
 }
 
 func NewServer(service InvestigationService, reader InvestigationReader, webhookSecret, operatorToken string, options ...Option) (*Server, error) {
-	if service == nil || reader == nil || webhookSecret == "" || operatorToken == "" {
-		return nil, errors.New("investigation service, reader, webhook secret, and operator token are required")
+	if reader == nil || operatorToken == "" {
+		return nil, errors.New("investigation reader and operator token are required")
 	}
 	server := &Server{service: service, reader: reader, webhookSecret: webhookSecret, operatorToken: operatorToken, now: func() time.Time { return time.Now().UTC() }}
 	for _, option := range options {
@@ -115,6 +132,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/admin/overview", s.getAdminOverview)
 	mux.HandleFunc("GET /v1/admin/investigations", s.listAdminInvestigations)
 	mux.HandleFunc("GET /v1/admin/approvals", s.listAdminApprovals)
+	mux.HandleFunc("GET /v1/admin/setup", s.getSetup)
+	mux.HandleFunc("POST /v1/admin/setup/connectors/{name}/test", s.testSetupConnector)
 	mux.HandleFunc("POST /v1/admin/routing/preview", s.previewRouting)
 	mux.HandleFunc("POST /v1/admin/approvals/{id}/decision", s.decideAdminApproval)
 	s.registerWeb(mux)
@@ -122,6 +141,10 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) receiveJiraReply(writer http.ResponseWriter, request *http.Request) {
+	if s.webhookSecret == "" {
+		writeError(writer, http.StatusServiceUnavailable, "Jira intake is not configured")
+		return
+	}
 	if !s.authorized(request) {
 		writeError(writer, http.StatusUnauthorized, "unauthorized")
 		return
@@ -160,10 +183,6 @@ func (s *Server) receiveJiraReply(writer http.ResponseWriter, request *http.Requ
 		writeError(writer, http.StatusForbidden, "reply author is not the ticket requester")
 		return
 	}
-	if errors.Is(err, investigations.ErrUnauthorizedReply) {
-		writeError(writer, http.StatusForbidden, "reply author is not the ticket requester")
-		return
-	}
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "could not receive requester reply")
 		return
@@ -180,8 +199,16 @@ func (s *Server) health(writer http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) receiveJira(writer http.ResponseWriter, request *http.Request) {
+	if s.webhookSecret == "" {
+		writeError(writer, http.StatusServiceUnavailable, "Jira intake is not configured")
+		return
+	}
 	if !s.authorized(request) {
 		writeError(writer, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if s.service == nil {
+		writeError(writer, http.StatusServiceUnavailable, "Jira intake is not configured")
 		return
 	}
 	defer request.Body.Close()
@@ -273,6 +300,9 @@ func (s *Server) authorized(request *http.Request) bool {
 }
 
 func authorized(request *http.Request, expected string) bool {
+	if expected == "" {
+		return false
+	}
 	value := request.Header.Get("Authorization")
 	provided, ok := strings.CutPrefix(value, "Bearer ")
 	if !ok || len(provided) != len(expected) {
