@@ -56,6 +56,14 @@ hand off a case when evidence reveals another domain. Handoffs retain the
 original request, accumulated evidence, conversation, and audit history, so
 the requester experiences one continuous interaction.
 
+The implemented case-memory path scopes that continuity to the active role:
+only same-case observations with explicit provenance for its allowed read
+collectors reach the model. Legacy evidence without capability provenance is
+hidden from model memory. Current observations have priority within the 128
+observation / 256 KiB diagnosis-input limits; omissions and historical/stale
+evidence are identified as context gaps. Broader specialists' handoff reasons
+are withheld when their evidence scope exceeds the receiving role's scope.
+
 Typical flow:
 
 ```text
@@ -78,6 +86,14 @@ impact, and reason for escalation. The administrator or deterministic policy
 decides; Wardstone then carries out authorized work, verifies the outcome,
 updates the requester, and closes the case.
 
+In the current SHADOW slice, the review package and requester messages are
+durable operator-visible drafts. The web investigation detail separates
+verified findings, assumptions, and unknowns, shows citations and available
+observation provenance/timestamps, and exposes exact action arguments and policy
+outcomes. SHADOW performs no requester sends or connector writes. The delivery
+outbox/Jira sender and approval state machine are foundations for the next
+operator-reviewed sending and approved-action pilot.
+
 ## Evidence, research, and auditability
 
 Specialist conclusions distinguish verified evidence, external/vendor claims,
@@ -85,6 +101,25 @@ unknowns, and assumptions. Vendor reviews, for example, can cover security
 documentation, certifications, DPAs, subprocessors, data handling and
 residency, retention, identity controls, privacy terms, AI data-use terms,
 public incidents, and alignment with internal requirements.
+
+The current report contract is a versioned `work_package` with `summary`,
+`findings` (`verified` or `assumption`, statement, evidence IDs), `unknowns`,
+`escalation_reason`, `requester_summary`, and `expected_impact`. A verified finding
+requires citations to observations actually supplied to the run; the label
+records the model's evidence-backed finding, not independent verification of
+business authorization. Mutations require every citation to be current-run
+evidence, at most 15 minutes old and no more than one minute future-dated, with
+freshness rechecked after the model call. Historical observations can explain a
+case but cannot ground a mutation proposal.
+
+Bounded access help uses administrator-owned `access_help.resources` to map a
+named resource to a Google group. Exact `Access resource` and `Access user`
+structured fields select the resource/user; an absent resource field can be
+filled only by the requester's whole-reply exact resource name. The collector
+inspects direct `USER` membership only. The mapping and direct membership do
+not establish application access, transitive access, or approval to grant it.
+See [development setup](development.md#bounded-access-help) and
+[report schema and citation rules](architecture.md#bounded-case-memory-and-reports).
 
 Every work item is durable across process restarts and may wait for a user,
 approval, API response, or vendor information for minutes or days. Its audit

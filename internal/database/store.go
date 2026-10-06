@@ -75,9 +75,9 @@ func (s *Store) ReceiveTicket(ctx context.Context, ticket domain.Ticket, investi
 func (s *Store) GetInvestigation(ctx context.Context, id domain.InvestigationID) (domain.Investigation, error) {
 	var item domain.Investigation
 	err := s.pool.QueryRow(ctx, `SELECT id, ticket_id, status, model_provider, model, prompt_version, specialist,
-		routing, diagnosis, failure, created_at, started_at, completed_at FROM investigations WHERE id = $1`, id).Scan(
+		routing, diagnosis, work_package, failure, created_at, started_at, completed_at FROM investigations WHERE id = $1`, id).Scan(
 		&item.ID, &item.TicketID, &item.Status, &item.ModelProvider, &item.Model, &item.PromptVersion,
-		&item.Specialist, &item.Routing, &item.Diagnosis, &item.Failure, &item.CreatedAt, &item.StartedAt, &item.CompletedAt)
+		&item.Specialist, &item.Routing, &item.Diagnosis, &item.WorkPackage, &item.Failure, &item.CreatedAt, &item.StartedAt, &item.CompletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Investigation{}, investigations.ErrNotFound
 	}
@@ -169,6 +169,51 @@ func (s *Store) ListMessages(ctx context.Context, id domain.InvestigationID) ([]
 	return messages, nil
 }
 
+// ListEvidence filters provenance before applying the bound. Empty provenance is
+// deliberately never authorized: legacy rows have no trustworthy capability.
+func (s *Store) ListEvidence(ctx context.Context, id domain.InvestigationID, capabilities []domain.CapabilityName, limit int) ([]domain.Evidence, error) {
+	if limit < 1 {
+		limit = 1
+	} else if limit > 128 {
+		limit = 128
+	}
+	allowed := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		if capability != "" {
+			allowed = append(allowed, string(capability))
+		}
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id, investigation_id, source, capability, kind, summary, data, observed_at
+		FROM evidence WHERE investigation_id = $1 AND capability <> '' AND capability = ANY($2::text[])
+		ORDER BY observed_at DESC, id DESC LIMIT $3`, id, allowed, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]domain.Evidence, 0)
+	for rows.Next() {
+		var item domain.Evidence
+		if err := rows.Scan(&item.ID, &item.InvestigationID, &item.Source, &item.Capability,
+			&item.Kind, &item.Summary, &item.Data, &item.ObservedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		var exists bool
+		if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM investigations WHERE id = $1)`, id).Scan(&exists); err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, investigations.ErrNotFound
+		}
+	}
+	return items, nil
+}
+
 func (s *Store) StartInvestigation(ctx context.Context, id domain.InvestigationID, at time.Time) error {
 	return s.transaction(ctx, func(tx pgx.Tx) error {
 		if err := requireLease(ctx, tx, id); err != nil {
@@ -227,20 +272,20 @@ func (s *Store) RecordEvidence(ctx context.Context, id domain.InvestigationID, i
 		}
 		for _, item := range items {
 			_, err := tx.Exec(ctx, `INSERT INTO evidence
-				(id, investigation_id, source, kind, summary, data, observed_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-				item.ID, id, item.Source, item.Kind, item.Summary, item.Data, item.ObservedAt)
+				(id, investigation_id, source, capability, kind, summary, data, observed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+				item.ID, id, item.Source, item.Capability, item.Kind, item.Summary, item.Data, item.ObservedAt)
 			if err != nil {
 				return fmt.Errorf("insert evidence: %w", err)
 			}
 			if err := appendEvent(ctx, tx, id, audit.EvidenceCollected, audit.ActorConnector, string(item.Source), at, map[string]any{
-				"evidence_id": item.ID, "kind": item.Kind, "observed_at": item.ObservedAt,
+				"evidence_id": item.ID, "capability": item.Capability, "kind": item.Kind, "observed_at": item.ObservedAt,
 			}); err != nil {
 				return err
 			}
 		}
 		for _, failure := range failures {
 			if err := appendEvent(ctx, tx, id, audit.EvidenceCollectionFailed, audit.ActorConnector, string(failure.Source), at, map[string]any{
-				"error": failure.Error, "duration_ms": failure.Duration.Milliseconds(),
+				"capability": failure.Capability, "error": failure.Error, "duration_ms": failure.Duration.Milliseconds(),
 			}); err != nil {
 				return err
 			}
@@ -249,13 +294,25 @@ func (s *Store) RecordEvidence(ctx context.Context, id domain.InvestigationID, i
 	})
 }
 
-func (s *Store) CompleteInvestigation(ctx context.Context, id domain.InvestigationID, diagnosis string, provider domain.ModelProviderName, model string, evaluations []investigations.ActionEvaluation, resultMessage *domain.CaseMessage, deliver bool, at time.Time) error {
+func (s *Store) CompleteInvestigation(ctx context.Context, id domain.InvestigationID, diagnosis string, report *domain.WorkPackage, provider domain.ModelProviderName, model string, evaluations []investigations.ActionEvaluation, resultMessage *domain.CaseMessage, deliver bool, at time.Time) error {
+	var encodedReport []byte
+	if report != nil {
+		if err := report.ValidateStructure(); err != nil {
+			return fmt.Errorf("invalid work package: %w", err)
+		}
+		var err error
+		encodedReport, err = json.Marshal(report)
+		if err != nil {
+			return fmt.Errorf("encode work package: %w", err)
+		}
+	}
 	return s.transaction(ctx, func(tx pgx.Tx) error {
 		if err := requireLease(ctx, tx, id); err != nil {
 			return err
 		}
 		command, err := tx.Exec(ctx, `UPDATE investigations SET diagnosis = $2, model_provider = $3,
-			model = $4, status = 'COMPLETED', completed_at = $5 WHERE id = $1 AND status = 'RUNNING'`, id, diagnosis, provider, model, at)
+			model = $4, status = 'COMPLETED', completed_at = $5, work_package = $6
+			WHERE id = $1 AND status = 'RUNNING'`, id, diagnosis, provider, model, at, encodedReport)
 		if err != nil {
 			return err
 		}

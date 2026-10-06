@@ -42,7 +42,7 @@ func TestCheckSchemaRequiresCompleteHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if _, err := pool.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES (1), (7)`); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES (1), ($1)`, SchemaVersion); err != nil {
 		t.Fatal(err)
 	}
 	if err := CheckSchema(ctx, pool); !IsSchemaMismatch(err) {

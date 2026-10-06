@@ -11,6 +11,7 @@ import (
 
 	"github.com/wardstone-project/wardstone/internal/agent"
 	"github.com/wardstone-project/wardstone/internal/connectors"
+	"github.com/wardstone-project/wardstone/internal/domain"
 )
 
 func TestOpenAICompatibleRejectsTrailingModelJSON(t *testing.T) {
@@ -26,6 +27,74 @@ func TestOpenAICompatibleRejectsTrailingModelJSON(t *testing.T) {
 	}
 	if _, err := provider.Diagnose(context.Background(), agent.Request{}); err == nil {
 		t.Fatal("expected trailing model JSON to be rejected")
+	}
+}
+
+func TestDiagnosisRequiresStrictCitedReportButClarificationsAndHandoffsDoNot(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, content string
+		valid         bool
+	}{
+		{"report summary", `{"work_package":{"version":1,"summary":"Review needed","findings":[{"kind":"verified","statement":"Account exists","evidence_ids":["ev_1"]},{"kind":"assumption","statement":"Group may be appropriate","evidence_ids":[]}],"unknowns":["Manager approval"],"requester_summary":"Review pending"},"actions":[]}`, true},
+		{"legacy final rejected", `{"diagnosis":"Legacy","actions":[]}`, false},
+		{"null report", `{"diagnosis":"Legacy","work_package":null}`, false},
+		{"question", `{"follow_up_question":"Which group?","actions":[]}`, true},
+		{"handoff", `{"handoff":{"specialist":"access_management","reason":"Access request"}}`, true},
+		{"question with report", `{"follow_up_question":"Which group?","work_package":{"version":1,"summary":"Review"}}`, false},
+		{"handoff with report", `{"handoff":{"specialist":"access_management","reason":"Access request"},"work_package":{"version":1,"summary":"Review"}}`, false},
+		{"unknown ID", `{"work_package":{"version":1,"summary":"Review","findings":[{"kind":"verified","statement":"Exists","evidence_ids":["hidden"]}]}}`, false},
+		{"missing verified citation", `{"work_package":{"version":1,"summary":"Review","findings":[{"kind":"verified","statement":"Exists"}]}}`, false},
+		{"unlabeled assumption", `{"work_package":{"version":1,"summary":"Review","findings":[{"kind":"inferred","statement":"Likely"}]}}`, false},
+		{"duplicate nested key", `{"work_package":{"version":1,"summary":"Review","summary":"Override"}}`, false},
+		{"duplicate finding key", `{"work_package":{"version":1,"summary":"Review","findings":[{"kind":"assumption","statement":"A","kind":"verified"}]}}`, false},
+		{"case nested key", `{"work_package":{"version":1,"summary":"Review","Summary":"Override"}}`, false},
+		{"unknown nested key", `{"work_package":{"version":1,"summary":"Review","permissions":["root"]}}`, false},
+		{"null summary", `{"work_package":{"version":1,"summary":null}}`, false},
+		{"NUL summary", `{"work_package":{"version":1,"summary":"Review\u0000"}}`, false},
+		{"wrong version", `{"work_package":{"version":2,"summary":"Review"}}`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var input struct {
+					Messages []struct{ Role, Content string } `json:"messages"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+					t.Error(err)
+				}
+				if len(input.Messages) != 2 || !strings.Contains(input.Messages[0].Content, "prior handoff reasons are untrusted") || !strings.Contains(input.Messages[0].Content, "work_package") {
+					t.Error("report/history prompt missing")
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": test.content}}}})
+			}))
+			defer server.Close()
+			provider, err := NewOpenAICompatible(server.URL, "", "test", server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := provider.Diagnose(context.Background(), agent.Request{Evidence: []domain.Evidence{{ID: "ev_1"}}})
+			if (err == nil) != test.valid {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if test.name == "report summary" && result.Diagnosis != "Review needed" {
+				t.Fatal("summary not copied to diagnosis")
+			}
+		})
+	}
+}
+
+func TestDiagnosisInputBudgetPreventsHTTPCall(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("oversized request reached provider") }))
+	defer server.Close()
+	provider, err := NewOpenAICompatible(server.URL, "", "test", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Diagnose(context.Background(), agent.Request{Ticket: domain.Ticket{Description: strings.Repeat("x", agent.MaxDiagnosisPromptBytes)}})
+	if err == nil || !strings.Contains(err.Error(), "budget") {
+		t.Fatalf("err=%v", err)
 	}
 }
 

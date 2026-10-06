@@ -39,17 +39,22 @@ The current milestone is deliberately limited to **SHADOW** mode. A Jira ticket
 can be ingested, Google Workspace context can be gathered, the model can ask a
 focused question when the request is incomplete, and a later Jira reply resumes
 the same durable investigation. When enough context exists, Wardstone produces
-an evidence-backed diagnosis and proposed actions; policy evaluates each
-proposal. No state-changing action is executed in this mode.
+a structured work package separating verified findings, assumptions, unknowns,
+escalation reasons, expected impact, and a requester-summary draft. Policy
+evaluates each proposed action. SHADOW performs no requester sends or connector
+writes.
 
 The admin console now exposes an onboarding and connector-readiness foundation:
 Wardstone can start with Jira, Google, and the model unconfigured, explains the
 resulting feature availability, and runs explicit read-only connection tests.
 Credentials remain environment-managed and are never entered into or returned
-by the browser. The next product work is bounded skills for the three proof
-points: interactive helpdesk work, access management, and vendor review. Slack
-remains an important requester/approval surface, but it is not a prerequisite
-for the core case lifecycle.
+by the browser. Bounded access help now inspects an administrator-mapped Google
+group and direct user membership, using structured ticket fields or an exact
+resource-name reply. Durable case memory carries permitted observations across
+resumes and handoffs, with citation and freshness validation. The next product
+work is a pilot of operator-reviewed sending and an explicitly approved action
+with verification. Slack remains an important requester/approval surface, but
+it is not a prerequisite for the core case lifecycle.
 
 ## Jira development setup
 
@@ -60,7 +65,9 @@ non-HTTPS Jira URLs except loopback addresses used for local development.
 
 In SHADOW mode, questions and final investigation summaries are durable drafts
 visible to operators; Wardstone never posts model-generated content to Jira.
-The delivery outbox is retained for a future reviewed sending workflow.
+The transactional delivery outbox, leased dispatcher, and Jira comment adapter
+are implemented; SHADOW does not enqueue deliveries or start the dispatcher.
+Operator-reviewed sending is the next workflow to pilot.
 
 See [development setup](docs/development.md) for the environment variables and
 Jira Automation payload shape.
@@ -78,15 +85,18 @@ review that returns a cited risk profile.
 
 The priority order is:
 
-1. Durable case context and requester conversations — **implemented in this
-   slice**.
+1. Durable case context and requester conversations — **implemented**, including
+   bounded, provenance-filtered evidence memory across resumes and handoffs.
 2. An admin onboarding flow that scopes environment-managed credentials, tests
    read access, and explains resulting permissions — **readiness foundation
    implemented; managed credential provisioning remains future work**.
-3. Bounded, testable investigation skills for helpdesk, IAM, vendor risk, and
-   systems knowledge; each returns an evidence-backed work package.
-4. Data classification, model-routing controls, approval/execution, and a
-   transactional delivery layer for Jira and Slack.
+3. Bounded access-help investigation and structured work packages —
+   **implemented in this slice**; vendor-risk and systems-knowledge evidence
+   adapters remain future work.
+4. Pilot operator-reviewed requester sending and an approved action with
+   postcondition verification. The Jira transactional delivery foundation and
+   approval state machine exist; enabling the workflow, Slack delivery, and
+   broader data-classification/model-routing controls remain future work.
 
 Ticket routing is deterministic-first: ordered rules use selected Jira fields
 before Wardstone asks a model for a confidence-gated intent classification.
@@ -108,7 +118,9 @@ Wardstone exposes two operator views backed by the same authenticated admin
 API:
 
 - a responsive web console at `/admin/` for service status, investigation
-  history, connector setup/readiness, audit timelines, and approval requests;
+  history, connector setup/readiness, investigation reports with literal evidence
+  citations and observation metadata, exact action arguments and policy,
+  requester drafts/conversations, audit timelines, and approval requests;
   and
 - a Charm-based terminal console with overview, investigation, and approval
   views.
@@ -121,8 +133,11 @@ request dispatch are enabled.
 
 ## Status
 
-Wardstone is at an early bootstrap stage. Interfaces and schemas are expected
-to evolve before the first tagged release.
+Wardstone has a SHADOW access-help/case-memory slice with operator-reviewable
+reports. The runtime requires database migrations **1 through 8**. Next is a
+small pilot of reviewed requester sending and approved, verified action
+execution. Interfaces and schemas are expected to evolve before the first
+tagged release.
 
 ## License
 

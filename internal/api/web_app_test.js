@@ -56,6 +56,14 @@ function textOf(element) {
   return [element.textContent, ...element.children.map(textOf)].join("\n");
 }
 
+function descendants(element) {
+  return [element, ...element.children.flatMap(descendants)];
+}
+
+function openInvestigation(get, id) {
+  get("investigation-list").listeners.click({ target: { closest: () => ({ dataset: { investigationId: id } }) } });
+}
+
 const submit = (element) => element.listeners.submit({ preventDefault() {} });
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -118,6 +126,139 @@ test("legacy investigations show routing data as absent", async () => {
   get("investigation-list").listeners.click({ target: { closest: () => ({ dataset: { investigationId: "inv-legacy" } }) } });
   await settle();
   assert.ok(textOf(get("dialog-body")).includes("Routing details were not recorded"));
+  assert.ok(textOf(get("dialog-body")).includes("No structured report was recorded"));
+  assert.ok(textOf(get("dialog-body")).includes("No proposed actions recorded"));
+  assert.ok(textOf(get("dialog-body")).includes("No messages recorded"));
+});
+
+test("report separates findings, assumptions and unknowns with literal citations and provenance", async () => {
+  const hostile = '<img src=x onerror="alert(1)">';
+  const citation = `evidence-${hostile}`;
+  const observed = new Date(Date.now() - 60000).toISOString();
+  const report = {
+    version: 1, summary: `Summary ${hostile}`,
+    findings: [
+      { kind: "verified", statement: `Direct membership ${hostile}`, evidence_ids: [citation] },
+      { kind: "assumption", statement: `Business need ${hostile}`, evidence_ids: ["javascript:alert(1)"] },
+    ],
+    unknowns: [`Effective access ${hostile}`], escalation_reason: `Review ${hostile}`,
+    requester_summary: `Requester draft ${hostile}`, expected_impact: `Impact ${hostile}`,
+  };
+  const { get, requests } = harness({
+    "/v1/investigations/report-1": { body: { status: "COMPLETED", work_package: report } },
+    "/v1/investigations/report-1/timeline": { body: { events: [
+      { type: "evidence.collected", actor_type: "CONNECTOR", actor_id: `google-${hostile}`, data: { evidence_id: citation, kind: `google.access_request-${hostile}`, capability: `google.access.inspect-${hostile}`, observed_at: observed } },
+    ] } },
+  });
+  openInvestigation(get, "report-1");
+  await settle();
+  const body = get("dialog-body");
+  const nodes = descendants(body);
+  const verified = nodes.find((item) => item.className === "finding-list verified");
+  const assumptions = nodes.find((item) => item.className === "finding-list assumption");
+  assert.ok(textOf(verified).includes(report.findings[0].statement));
+  assert.ok(!textOf(verified).includes(report.findings[1].statement));
+  assert.ok(textOf(assumptions).includes(report.findings[1].statement));
+  assert.ok(textOf(assumptions).includes("javascript:alert(1)"));
+  assert.ok(textOf(assumptions).includes("Provenance and observation time not recorded"));
+  const text = textOf(body);
+  for (const value of [report.summary, ...report.unknowns, report.escalation_reason, report.requester_summary, report.expected_impact, citation, observed, `Source: google-${hostile}`, `Capability: google.access.inspect-${hostile}`, "Recent observation (at display time)", "current-run mutation eligibility"]) assert.ok(text.includes(value), `Missing ${value}`);
+  assert.ok(nodes.some((item) => item.tagName === "code" && item.textContent === citation));
+  assert.ok(!nodes.some((item) => ["a", "img", "script", "iframe"].includes(item.tagName)));
+  assert.deepEqual(requests.filter((item) => item.url.startsWith("/v1/investigations/")).map((item) => item.url).sort(), ["/v1/investigations/report-1", "/v1/investigations/report-1/messages", "/v1/investigations/report-1/timeline"]);
+});
+
+test("citations expose stale, future and unknown observation times without inferring provenance", async () => {
+  const { get } = harness({
+    "/v1/investigations/ages": { body: { work_package: { version: 1, summary: "Review ages", findings: [{ kind: "verified", statement: "Historical context", evidence_ids: ["old", "future", "legacy"] }], unknowns: [] } } },
+    "/v1/investigations/ages/timeline": { body: { events: [
+      { type: "evidence.collected", actor_type: "CONNECTOR", actor_id: "google", data: { evidence_id: "old", observed_at: new Date(Date.now() - 16 * 60000).toISOString() } },
+      { type: "evidence.collected", actor_type: "CONNECTOR", actor_id: "google", data: { evidence_id: "future", observed_at: new Date(Date.now() + 5 * 60000).toISOString() } },
+      { type: "evidence.collected", data: { evidence_id: "legacy", kind: "google.access_request" } },
+    ] } },
+  });
+  openInvestigation(get, "ages");
+  await settle();
+  const text = textOf(get("dialog-body"));
+  for (const value of ["Stale observation", "Future-dated observation", "Observation time unknown", "Source: unknown · Capability: not recorded"]) assert.ok(text.includes(value), `Missing ${value}`);
+});
+
+test("exact action arguments and policy reasons render literally and join by action ID", async () => {
+  const hostile = '<script>alert("policy")</script>';
+  const argumentsJSON = { group_email: "engineering@example.com", user_email: "requester@example.com", note: hostile, nested: { url: "javascript:alert(1)", flag: false } };
+  const { get } = harness({
+    "/v1/investigations/actions/timeline": { body: { events: [
+      { type: "action.proposed", data: { action_id: "grant", capability: "google.groups.add_member", arguments: argumentsJSON, reason: hostile, digest: "exact-digest", evidence_ids: ["evidence-1"] } },
+      { type: "action.proposed", data: { action_id: "remove", capability: "google.groups.remove_member", arguments: { user_email: "other@example.com" } } },
+      { type: "action.proposed", data: { action_id: "unevaluated", capability: "google.groups.get", arguments: {} } },
+      { type: "policy.evaluated", data: { action_id: "remove", decision: "REQUIRE_APPROVAL", reason: "remove-only" } },
+      { type: "policy.evaluated", data: { action_id: "grant", decision: "DENY", reason: `shadow_mode ${hostile}` } },
+    ] } },
+  });
+  openInvestigation(get, "actions");
+  await settle();
+  const nodes = descendants(get("dialog-body"));
+  const actions = nodes.filter((item) => item.className === "action-detail");
+  assert.equal(actions.length, 3);
+  const grant = textOf(actions[0]);
+  for (const value of ["Exact arguments (JSON)", "exact-digest", "evidence-1", "DENY", `shadow_mode ${hostile}`]) assert.ok(grant.includes(value), `Missing ${value}`);
+  assert.ok(!grant.includes("remove-only"));
+  assert.ok(textOf(actions[1]).includes("REQUIRE_APPROVAL · remove-only"));
+  assert.ok(!textOf(actions[1]).includes("shadow_mode"));
+  assert.ok(textOf(actions[2]).includes("Policy evaluation not recorded"));
+  const argumentsNode = descendants(actions[0]).find((item) => item.tagName === "pre");
+  assert.deepEqual(JSON.parse(argumentsNode.textContent), argumentsJSON);
+  assert.ok(argumentsNode.textContent.includes(hostile.replaceAll('"', '\\"')));
+  assert.ok(!nodes.some((item) => ["a", "script"].includes(item.tagName)));
+});
+
+test("requester questions, replies and final drafts preserve literal conversation text", async () => {
+  const hostile = '<a href="javascript:alert(1)">Engineering</a>';
+  const { get } = harness({
+    "/v1/investigations/conversation/messages": { body: { messages: [
+      { direction: "OUTBOUND", author: "wardstone", source: "jira", body: `Which resource?\n${hostile}` },
+      { direction: "INBOUND", author: `requester-${hostile}`, source: "jira", body: hostile },
+      { direction: "OUTBOUND", author: "wardstone", source: "jira", body: `Final result\n${hostile}` },
+    ] } },
+  });
+  openInvestigation(get, "conversation");
+  await settle();
+  const nodes = descendants(get("dialog-body"));
+  const messages = nodes.filter((item) => item.className === "message-detail");
+  assert.equal(messages.length, 3);
+  assert.ok(textOf(messages[0]).includes(`Which resource?\n${hostile}`));
+  assert.ok(textOf(messages[1]).includes("Requester reply"));
+  assert.ok(textOf(messages[1]).includes(`requester-${hostile}`));
+  assert.ok(textOf(messages[2]).includes(`Final result\n${hostile}`));
+  assert.ok(textOf(get("dialog-body")).includes("does not confirm delivery"));
+  assert.ok(!nodes.some((item) => item.tagName === "a"));
+});
+
+test("unavailable conversation leaves the report and diagnosis readable", async () => {
+  const { get } = harness({
+    "/v1/investigations/partial": { body: { diagnosis: "Diagnosis retained", work_package: { version: 1, summary: "Report retained", findings: [], unknowns: [] } } },
+    "/v1/investigations/partial/messages": { status: 404 },
+  });
+  openInvestigation(get, "partial");
+  await settle();
+  const text = textOf(get("dialog-body"));
+  for (const value of ["Diagnosis retained", "Report retained", "Conversation could not be loaded"]) assert.ok(text.includes(value));
+});
+
+test("a slow detail response cannot replace another case's report and actions", async () => {
+  let resolveOld;
+  const oldResponse = new Promise((resolve) => { resolveOld = resolve; });
+  const { get } = harness({
+    "/v1/investigations/old": () => oldResponse,
+    "/v1/investigations/new": { body: { diagnosis: "New case diagnosis" } },
+  });
+  openInvestigation(get, "old");
+  openInvestigation(get, "new");
+  await settle();
+  resolveOld({ body: { diagnosis: "Old case diagnosis" } });
+  await settle();
+  assert.ok(textOf(get("dialog-body")).includes("New case diagnosis"));
+  assert.ok(!textOf(get("dialog-body")).includes("Old case diagnosis"));
 });
 
 test("setup renders connector readiness as literal text", async () => {

@@ -41,6 +41,8 @@ func (s *Store) Overview(ctx context.Context) (admin.Overview, error) {
 }
 
 func (s *Store) ListInvestigations(ctx context.Context, limit int) ([]admin.InvestigationSummary, error) {
+	// Cited reports are detail-only (GetInvestigation); keep list payloads bounded
+	// independently of the number of findings and citations in each case.
 	rows, err := s.pool.Query(ctx, `SELECT i.id, i.ticket_id, i.status, i.model_provider, i.model,
 		i.prompt_version, i.specialist, i.routing, i.diagnosis, i.failure, i.created_at, i.started_at, i.completed_at,
 		t.source, t.external_id, t.summary, t.reporter_email

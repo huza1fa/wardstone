@@ -132,6 +132,27 @@ func NewService(store Store, collectors []connectors.EvidenceCollector, model ag
 			}
 		}
 	}
+	installed := make(map[domain.CapabilityName]bool, len(collectors))
+	for _, collector := range collectors {
+		if collector == nil {
+			return nil, errors.New("installed evidence collector is required")
+		}
+		name, capability := collector.Name(), collector.Capability()
+		definition, err := registry.Get(capability)
+		if err != nil {
+			return nil, fmt.Errorf("installed collector %q references unknown capability %q", name, capability)
+		}
+		if definition.Connector != name {
+			return nil, fmt.Errorf("installed collector %q does not own capability %q", name, capability)
+		}
+		if definition.Effect != domain.EffectRead {
+			return nil, fmt.Errorf("installed collector %q capability %q must be read-only", name, capability)
+		}
+		if installed[capability] {
+			return nil, fmt.Errorf("duplicate installed collector capability %q", capability)
+		}
+		installed[capability] = true
+	}
 	return &Service{
 		store: store, collectors: append([]connectors.EvidenceCollector(nil), collectors...),
 		model: model, registry: registry, policy: policy, config: config, clock: realClock{},
@@ -234,9 +255,20 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 	}()
 
 	activeCollectors := make([]connectors.EvidenceCollector, 0, len(s.collectors))
+	available := make(map[domain.CapabilityName]bool)
 	for _, collector := range s.collectors {
 		if s.specialists.AllowsCollector(profile.Name, collector.Capability()) {
 			activeCollectors = append(activeCollectors, collector)
+			available[collector.Capability()] = true
+		}
+	}
+	handoffs, warnings, err := s.caseHistory(ctx, id, profile)
+	if err != nil {
+		return err
+	}
+	for _, capability := range profile.AllowedCollectors {
+		if !available[capability] {
+			warnings = append(warnings, fmt.Sprintf("Collector %s is unavailable; its observations could not be refreshed.", capability))
 		}
 	}
 	tools := make([]ToolInvocation, len(activeCollectors))
@@ -271,7 +303,15 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 			started := s.clock.Now()
 			callCtx, cancel := context.WithTimeout(groupCtx, s.config.CollectorTimeout)
 			defer cancel()
-			evidence, collectErr := collector.Collect(callCtx, ticket)
+			collectorTicket := ticket
+			collectorTicket.Metadata = ticket.Metadata.Clone()
+			var evidence []domain.Evidence
+			var collectErr error
+			if contextual, ok := collector.(contextualCollector); ok {
+				evidence, collectErr = contextual.CollectCase(callCtx, collectorTicket, append([]domain.CaseMessage(nil), messages...))
+			} else {
+				evidence, collectErr = collector.Collect(callCtx, collectorTicket)
+			}
 			results[i] = collectorResult{evidence: evidence, err: collectErr, duration: s.clock.Now().Sub(started)}
 			return nil // Collector errors are evidence gaps, not group cancellation.
 		})
@@ -288,19 +328,21 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 
 	var evidence []domain.Evidence
 	var failures []CollectionFailure
-	var warnings []string
 	for i, result := range results {
 		if result.err != nil {
-			failures = append(failures, CollectionFailure{Source: tools[i].Connector, Error: result.err.Error(), Duration: result.duration})
-			warnings = append(warnings, fmt.Sprintf("%s: %v", tools[i].Capability, result.err))
+			failures = append(failures, CollectionFailure{Source: tools[i].Connector, Capability: tools[i].Capability, Error: result.err.Error(), Duration: result.duration})
+			warnings = append(warnings, fmt.Sprintf("Collection failed for %s; observations could not be refreshed.", tools[i].Capability))
 			continue
+		}
+		if len(result.evidence) == 0 {
+			warnings = append(warnings, fmt.Sprintf("Collector %s returned no observations.", tools[i].Capability))
 		}
 		for _, item := range result.evidence {
 			item.ID = domain.NewEvidenceID()
 			item.InvestigationID = id
-			if item.Source == "" {
-				item.Source = tools[i].Connector
-			}
+			item.Source = tools[i].Connector
+			item.Capability = tools[i].Capability
+			item.Data = append(json.RawMessage(nil), item.Data...)
 			if item.ObservedAt.IsZero() {
 				item.ObservedAt = s.clock.Now()
 			}
@@ -310,15 +352,22 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 	if err := s.store.RecordEvidence(ctx, id, evidence, failures, s.clock.Now()); err != nil {
 		return fmt.Errorf("record evidence: %w", err)
 	}
-	if len(activeCollectors) > 0 && len(evidence) == 0 {
-		return errors.New("all evidence collectors failed or returned no evidence")
+	prior, err := s.store.ListEvidence(ctx, id, append([]domain.CapabilityName(nil), profile.AllowedCollectors...), maxPromptEvidence)
+	if err != nil {
+		return fmt.Errorf("reload case evidence: %w", err)
 	}
+	request, freshEvidence, err := s.boundedCaseRequest(agent.Request{
+		InvestigationID: id, Ticket: ticket, Conversation: messages, Warnings: warnings, Handoffs: handoffs,
+		Specialist: profile.Name, Instructions: profile.Instructions,
+	}, evidence, prior, profile, s.clock.Now())
+	if err != nil {
+		return err
+	}
+	// Freeze citation authority before invoking a provider that can mutate its request.
+	supplied := cloneEvidence(request.Evidence)
 
 	modelCtx, cancel := context.WithTimeout(ctx, s.config.ModelTimeout)
-	result, err := s.model.Diagnose(modelCtx, agent.Request{
-		InvestigationID: id, Ticket: ticket, Evidence: evidence, Conversation: messages, Warnings: warnings,
-		Specialist: profile.Name, Instructions: profile.Instructions,
-	})
+	result, err := s.model.Diagnose(modelCtx, request)
 	cancel()
 	if err != nil {
 		return fmt.Errorf("generate diagnosis: %w", err)
@@ -326,11 +375,14 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 	if len(result.FollowUpQuestion) > maxFollowUpQuestionSize {
 		return fmt.Errorf("model follow-up question exceeds %d bytes", maxFollowUpQuestionSize)
 	}
+	if result.FollowUpQuestion != "" && (strings.TrimSpace(result.FollowUpQuestion) == "" || !utf8.ValidString(result.FollowUpQuestion) || strings.ContainsRune(result.FollowUpQuestion, 0)) {
+		return errors.New("model follow-up question must be nonblank valid UTF-8 without NUL")
+	}
 	if result.Handoff != nil {
-		if result.Diagnosis != "" || result.FollowUpQuestion != "" || len(result.Actions) != 0 {
-			return errors.New("model handoff cannot include a diagnosis, question, or actions")
+		if result.Diagnosis != "" || result.FollowUpQuestion != "" || len(result.Actions) != 0 || result.WorkPackage != nil {
+			return errors.New("model handoff cannot include a diagnosis, question, actions, or work package")
 		}
-		if result.Handoff.Specialist == "" || strings.TrimSpace(result.Handoff.Reason) == "" || len(result.Handoff.Reason) > maxActionReasonSize {
+		if result.Handoff.Specialist == "" || strings.TrimSpace(result.Handoff.Reason) == "" || len(result.Handoff.Reason) > maxActionReasonSize || !utf8.ValidString(result.Handoff.Reason) || strings.ContainsRune(result.Handoff.Reason, 0) {
 			return errors.New("model handoff requires a target specialist and concise reason")
 		}
 		if !s.specialists.AllowsHandoff(profile.Name, result.Handoff.Specialist) {
@@ -345,8 +397,8 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 		return nil
 	}
 	if result.FollowUpQuestion != "" {
-		if result.Diagnosis != "" || len(result.Actions) != 0 {
-			return errors.New("model follow-up question cannot include a diagnosis or actions")
+		if result.Diagnosis != "" || len(result.Actions) != 0 || result.WorkPackage != nil {
+			return errors.New("model follow-up question cannot include a diagnosis, actions, or work package")
 		}
 		if err := s.checkLimit(ctx, id, audit.RequesterQuestionAsked, s.config.MaxFollowUpQuestions, "follow-up question"); err != nil {
 			return err
@@ -362,29 +414,60 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 		}
 		return nil
 	}
-	if result.Diagnosis == "" {
+	result.WorkPackage = result.WorkPackage.Clone()
+	if result.WorkPackage != nil {
+		if err := result.WorkPackage.Validate(supplied); err != nil {
+			return fmt.Errorf("validate work package: %w", err)
+		}
+		if result.Diagnosis == "" {
+			result.Diagnosis = result.WorkPackage.Summary
+		}
+	}
+	if strings.TrimSpace(result.Diagnosis) == "" {
 		return errors.New("model returned an empty diagnosis")
 	}
-	if len(result.Diagnosis) > maxDiagnosisSize {
+	if len(result.Diagnosis) > maxDiagnosisSize || !utf8.ValidString(result.Diagnosis) || strings.ContainsRune(result.Diagnosis, 0) {
 		return fmt.Errorf("model diagnosis exceeds %d bytes", maxDiagnosisSize)
 	}
 	if len(result.Actions) > maxProposedActions {
 		return fmt.Errorf("model proposed %d actions; limit is %d", len(result.Actions), maxProposedActions)
 	}
-
-	evidenceSet := make(map[domain.EvidenceID]struct{}, len(evidence))
-	for _, item := range evidence {
-		evidenceSet[item.ID] = struct{}{}
+	// Snapshot all proposals before calling any component that may retain or
+	// mutate its input, so validators cannot rewrite later provider proposals.
+	proposals := make([]agent.ProposedAction, len(result.Actions))
+	for i, proposal := range result.Actions {
+		proposals[i] = proposal
+		proposals[i].Arguments = append(json.RawMessage(nil), proposal.Arguments...)
+		proposals[i].EvidenceIDs = append([]domain.EvidenceID(nil), proposal.EvidenceIDs...)
 	}
-	evaluations := make([]ActionEvaluation, 0, len(result.Actions))
-	for _, proposal := range result.Actions {
-		if proposal.Reason == "" || len(proposal.Reason) > maxActionReasonSize || len(proposal.EvidenceIDs) == 0 {
+
+	evidenceSet := make(map[domain.EvidenceID]domain.Evidence, len(supplied))
+	for _, item := range supplied {
+		evidenceSet[item.ID] = item
+	}
+	validatedActions := make([]domain.ProposedAction, 0, len(proposals))
+	for _, proposal := range proposals {
+		if strings.TrimSpace(proposal.Reason) == "" || len(proposal.Reason) > maxActionReasonSize || !utf8.ValidString(proposal.Reason) || strings.ContainsRune(proposal.Reason, 0) || len(proposal.EvidenceIDs) == 0 || len(proposal.EvidenceIDs) > maxPromptEvidence {
 			return errors.New("proposed actions require a reason and at least one evidence ID")
 		}
+		definition, err := s.registry.Get(proposal.Capability)
+		if err != nil {
+			return fmt.Errorf("validate proposed capability: %w", err)
+		}
+		seenIDs := make(map[domain.EvidenceID]bool)
+		referenced := make([]domain.Evidence, 0, len(proposal.EvidenceIDs))
 		for _, evidenceID := range proposal.EvidenceIDs {
 			if _, ok := evidenceSet[evidenceID]; !ok {
 				return fmt.Errorf("proposed action references unknown evidence %q", evidenceID)
 			}
+			if seenIDs[evidenceID] {
+				return errors.New("proposed action contains duplicate evidence IDs")
+			}
+			seenIDs[evidenceID] = true
+			if definition.Effect == domain.EffectMutate && (!freshEvidence[evidenceID] || !freshObservation(evidenceSet[evidenceID], s.clock.Now())) {
+				return errors.New("mutation proposal requires fresh current-run evidence; historical or stale reference rejected")
+			}
+			referenced = append(referenced, evidenceSet[evidenceID])
 		}
 		action := domain.ProposedAction{
 			ID: domain.NewActionID(), InvestigationID: id, Capability: proposal.Capability,
@@ -394,21 +477,39 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 		if err := action.Seal(); err != nil {
 			return fmt.Errorf("seal proposed action: %w", err)
 		}
-		if err := s.registry.ValidateAction(action); err != nil {
+		if err := s.registry.ValidateAction(cloneAction(action)); err != nil {
 			return fmt.Errorf("validate proposed action: %w", err)
 		}
 		if !s.specialists.AllowsCapability(profile.Name, action.Capability) {
 			return fmt.Errorf("specialist %q is not permitted to propose capability %q", profile.Name, action.Capability)
 		}
-		evaluations = append(evaluations, ActionEvaluation{Action: action, Policy: s.policy.Evaluate(ctx, action)})
+		for _, collector := range s.collectors {
+			if validator, ok := collector.(connectors.ProposalValidator); ok {
+				if err := validator.ValidateProposal(cloneAction(action), cloneEvidence(referenced)); err != nil {
+					return fmt.Errorf("proposal validation failed for connector %q", collector.Name())
+				}
+			}
+		}
+		validatedActions = append(validatedActions, action)
+	}
+	evaluations := make([]ActionEvaluation, 0, len(validatedActions))
+	for _, action := range validatedActions {
+		evaluations = append(evaluations, ActionEvaluation{Action: action, Policy: s.policy.Evaluate(ctx, cloneAction(action))})
 	}
 	messageID := domain.NewMessageID()
+	requesterSummary := result.Diagnosis
+	if result.WorkPackage != nil {
+		requesterSummary = result.WorkPackage.RequesterSummary
+		if requesterSummary == "" {
+			requesterSummary = "The investigation is complete. Please review the proposed next steps and any outstanding questions with an operator."
+		}
+	}
 	resultMessage := &domain.CaseMessage{
 		ID: messageID, InvestigationID: id, Source: ticket.Source,
 		ExternalID: "wardstone:" + string(messageID), Direction: domain.MessageOutbound,
-		Author: "wardstone", Body: formatResultMessage(result.Diagnosis, evaluations), CreatedAt: s.clock.Now(),
+		Author: "wardstone", Body: formatResultMessage(requesterSummary, evaluations), CreatedAt: s.clock.Now(),
 	}
-	if err := s.store.CompleteInvestigation(ctx, id, result.Diagnosis, s.model.Name(), s.model.Model(), evaluations, resultMessage, s.config.DeliverRequesterMessages, s.clock.Now()); err != nil {
+	if err := s.store.CompleteInvestigation(ctx, id, result.Diagnosis, result.WorkPackage, s.model.Name(), s.model.Model(), evaluations, resultMessage, s.config.DeliverRequesterMessages, s.clock.Now()); err != nil {
 		return fmt.Errorf("complete investigation: %w", err)
 	}
 	return nil

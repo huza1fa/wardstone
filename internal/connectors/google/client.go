@@ -50,30 +50,32 @@ func NewHTTPClient(baseURL, token string, httpClient *http.Client) (*HTTPClient,
 }
 
 func (c *HTTPClient) Probe(ctx context.Context) error {
-	endpoint := c.baseURL + "/users?customer=my_customer&maxResults=1&projection=basic"
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return connectors.NewProbeError(connectors.ProbeInvalidResponse)
-	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.token)
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	for _, collection := range []string{"users", "groups"} {
+		path := "/" + collection + "?customer=my_customer&maxResults=1"
+		if collection == "users" {
+			path += "&projection=basic"
+		}
+		var result map[string]json.RawMessage
+		if err := c.accessGet(ctx, path, &result); err != nil {
 			return err
 		}
-		return connectors.NewProbeError(connectors.ProbeUnavailable)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		return connectors.NewProbeError(connectors.ProbeFailureForStatus(response.StatusCode))
-	}
-	var result struct {
-		Users []json.RawMessage `json:"users"`
-	}
-	if err := connectors.DecodeProbeResponse(response.Body, &result); err != nil || result.Users == nil {
-		return connectors.NewProbeError(connectors.ProbeInvalidResponse)
+		if result == nil {
+			return connectors.NewProbeError(connectors.ProbeInvalidResponse)
+		}
+		// Directory omits the collection key for an empty successful result.
+		for key := range result {
+			if key != collection && key != "kind" && key != "etag" && key != "nextPageToken" {
+				return connectors.NewProbeError(connectors.ProbeInvalidResponse)
+			}
+		}
+		if raw, exists := result[collection]; exists {
+			var items []json.RawMessage
+			if err := json.Unmarshal(raw, &items); err != nil || items == nil || len(items) > 1 {
+				return connectors.NewProbeError(connectors.ProbeInvalidResponse)
+			}
+		}
 	}
 	return nil
 }

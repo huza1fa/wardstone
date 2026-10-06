@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -89,6 +90,47 @@ func (s *Store) ListMessages(_ context.Context, id domain.InvestigationID) ([]do
 	return result, nil
 }
 
+func (s *Store) ListEvidence(ctx context.Context, id domain.InvestigationID, capabilities []domain.CapabilityName, limit int) ([]domain.Evidence, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit < 1 {
+		limit = 1
+	} else if limit > 128 {
+		limit = 128
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.investigations[id]; !ok {
+		return nil, investigations.ErrNotFound
+	}
+	allowed := make(map[domain.CapabilityName]bool, len(capabilities))
+	for _, capability := range capabilities {
+		if capability != "" {
+			allowed[capability] = true
+		}
+	}
+	items := make([]domain.Evidence, 0)
+	for _, item := range s.evidence[id] {
+		if allowed[item.Capability] {
+			items = append(items, item)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].ObservedAt.Equal(items[j].ObservedAt) {
+			return items[i].ID > items[j].ID
+		}
+		return items[i].ObservedAt.After(items[j].ObservedAt)
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	for i := range items {
+		items[i].Data = append(json.RawMessage(nil), items[i].Data...)
+	}
+	return items, nil
+}
+
 func (s *Store) Dispatch(ctx context.Context, id domain.InvestigationID, decision domain.RoutingDecision, at time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -159,28 +201,38 @@ func (s *Store) RecordEvidence(_ context.Context, id domain.InvestigationID, ite
 	}
 	for _, item := range items {
 		copy := item
+		copy.InvestigationID = id
 		copy.Data = append(json.RawMessage(nil), item.Data...)
 		s.evidence[id] = append(s.evidence[id], copy)
 		s.appendEvent(id, audit.EvidenceCollected, audit.ActorConnector, string(item.Source), at, map[string]any{
-			"evidence_id": item.ID, "kind": item.Kind, "observed_at": item.ObservedAt,
+			"evidence_id": item.ID, "capability": item.Capability, "kind": item.Kind, "observed_at": item.ObservedAt,
 		})
 	}
 	for _, failure := range failures {
 		s.appendEvent(id, audit.EvidenceCollectionFailed, audit.ActorConnector, string(failure.Source), at, map[string]any{
-			"error": failure.Error, "duration_ms": failure.Duration.Milliseconds(),
+			"capability": failure.Capability, "error": failure.Error, "duration_ms": failure.Duration.Milliseconds(),
 		})
 	}
 	return nil
 }
 
-func (s *Store) CompleteInvestigation(_ context.Context, id domain.InvestigationID, diagnosis string, provider domain.ModelProviderName, model string, evaluations []investigations.ActionEvaluation, resultMessage *domain.CaseMessage, _ bool, at time.Time) error {
+func (s *Store) CompleteInvestigation(_ context.Context, id domain.InvestigationID, diagnosis string, report *domain.WorkPackage, provider domain.ModelProviderName, model string, evaluations []investigations.ActionEvaluation, resultMessage *domain.CaseMessage, _ bool, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.requireRunning(id); err != nil {
 		return err
 	}
+	if resultMessage != nil && (resultMessage.ID == "" || resultMessage.ExternalID == "" || resultMessage.Direction != domain.MessageOutbound || resultMessage.Body == "") {
+		return investigations.ErrInvalidTransition
+	}
+	if report != nil {
+		if err := report.ValidateStructure(); err != nil {
+			return fmt.Errorf("invalid work package: %w", err)
+		}
+	}
 	item := s.investigations[id]
 	item.Diagnosis, item.ModelProvider, item.Model = diagnosis, provider, model
+	item.WorkPackage = report.Clone()
 	s.appendEvent(id, audit.DiagnosisGenerated, audit.ActorModel, string(provider), at, map[string]any{"model": model})
 	for _, evaluation := range evaluations {
 		s.actions[id] = append(s.actions[id], cloneEvaluation(evaluation))
@@ -194,12 +246,10 @@ func (s *Store) CompleteInvestigation(_ context.Context, id domain.Investigation
 		})
 	}
 	if resultMessage != nil {
-		if resultMessage.ID == "" || resultMessage.ExternalID == "" || resultMessage.Direction != domain.MessageOutbound || resultMessage.Body == "" {
-			return investigations.ErrInvalidTransition
-		}
-		resultMessage.InvestigationID = id
-		s.messages[id] = append(s.messages[id], *resultMessage)
-		s.messageDedupe[string(resultMessage.Source)+"\x00"+resultMessage.ExternalID] = id
+		message := *resultMessage
+		message.InvestigationID = id
+		s.messages[id] = append(s.messages[id], message)
+		s.messageDedupe[string(message.Source)+"\x00"+message.ExternalID] = id
 	}
 	item.Status, item.CompletedAt = domain.InvestigationCompleted, &at
 	s.investigations[id] = item
@@ -471,6 +521,7 @@ func cloneTicket(ticket domain.Ticket) domain.Ticket {
 }
 
 func cloneInvestigation(item domain.Investigation) domain.Investigation {
+	item.WorkPackage = item.WorkPackage.Clone()
 	if item.Routing != nil {
 		decision := *item.Routing
 		if decision.Confidence != nil {

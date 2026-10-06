@@ -17,9 +17,10 @@ var (
 )
 
 type CollectionFailure struct {
-	Source   domain.ConnectorName
-	Error    string
-	Duration time.Duration
+	Source     domain.ConnectorName
+	Capability domain.CapabilityName
+	Error      string
+	Duration   time.Duration
 }
 
 type ActionEvaluation struct {
@@ -41,7 +42,11 @@ type Store interface {
 	StartInvestigation(context.Context, domain.InvestigationID, time.Time) error
 	RecordToolInvocations(context.Context, domain.InvestigationID, []ToolInvocation, time.Time) error
 	RecordEvidence(context.Context, domain.InvestigationID, []domain.Evidence, []CollectionFailure, time.Time) error
-	CompleteInvestigation(context.Context, domain.InvestigationID, string, domain.ModelProviderName, string, []ActionEvaluation, *domain.CaseMessage, bool, time.Time) error
+	// ListEvidence returns newest observations with explicit allowed capability
+	// provenance, bounded by limit, ordered by observed_at DESC then ID DESC.
+	// Empty allowlists return no evidence; legacy unstamped evidence stays hidden.
+	ListEvidence(context.Context, domain.InvestigationID, []domain.CapabilityName, int) ([]domain.Evidence, error)
+	CompleteInvestigation(context.Context, domain.InvestigationID, string, *domain.WorkPackage, domain.ModelProviderName, string, []ActionEvaluation, *domain.CaseMessage, bool, time.Time) error
 	WaitForRequester(context.Context, domain.InvestigationID, domain.CaseMessage, bool, time.Time) error
 	Handoff(context.Context, domain.InvestigationID, domain.SpecialistName, domain.SpecialistName, string, time.Time) error
 	ReceiveRequesterReply(context.Context, domain.ConnectorName, string, domain.CaseMessage, time.Time) (domain.InvestigationID, bool, error)

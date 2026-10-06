@@ -3,9 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/wardstone-project/wardstone/internal/domain"
 )
+
+const MaxDiagnosisPromptBytes = 256 << 10
 
 type Request struct {
 	InvestigationID domain.InvestigationID
@@ -13,8 +16,17 @@ type Request struct {
 	Evidence        []domain.Evidence
 	Conversation    []domain.CaseMessage
 	Warnings        []string
+	Handoffs        []HandoffContext
 	Specialist      domain.SpecialistName `json:"specialist"`
 	Instructions    string                `json:"instructions"`
+}
+
+// HandoffContext is durable history, not a source of instructions or authority.
+type HandoffContext struct {
+	From       domain.SpecialistName `json:"from"`
+	To         domain.SpecialistName `json:"to"`
+	Reason     string                `json:"reason"`
+	OccurredAt time.Time             `json:"occurred_at"`
 }
 
 type ProposedAction struct {
@@ -25,10 +37,11 @@ type ProposedAction struct {
 }
 
 type Result struct {
-	Diagnosis        string           `json:"diagnosis"`
-	FollowUpQuestion string           `json:"follow_up_question"`
-	Actions          []ProposedAction `json:"actions"`
-	Handoff          *Handoff         `json:"handoff,omitempty"`
+	Diagnosis        string              `json:"diagnosis"`
+	FollowUpQuestion string              `json:"follow_up_question"`
+	Actions          []ProposedAction    `json:"actions"`
+	Handoff          *Handoff            `json:"handoff,omitempty"`
+	WorkPackage      *domain.WorkPackage `json:"work_package,omitempty"`
 }
 
 // Handoff asks the deterministic runtime to resume the same durable case with

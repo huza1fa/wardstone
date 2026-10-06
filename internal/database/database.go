@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const SchemaVersion int64 = 7
+const SchemaVersion int64 = 8
 
 func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(databaseURL)

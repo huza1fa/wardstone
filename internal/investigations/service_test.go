@@ -653,7 +653,7 @@ func noActionDiagnosis(context.Context, agent.Request) (agent.Result, error) {
 	return agent.Result{Diagnosis: "No action is needed."}, nil
 }
 
-func newService(t *testing.T, store *memory.Store, collectors []connectors.EvidenceCollector, model agent.ModelProvider, registry *capabilities.Registry, concurrency int, options ...func(*investigations.Config)) *investigations.Service {
+func newService(t *testing.T, store investigations.Store, collectors []connectors.EvidenceCollector, model agent.ModelProvider, registry *capabilities.Registry, concurrency int, options ...func(*investigations.Config)) *investigations.Service {
 	t.Helper()
 	evaluator := policy.New(domain.OperatingModeShadow, registry, map[domain.CapabilityName]policy.RuleMode{"test.read": policy.RuleAllow, "test.write": policy.RuleAllow})
 	collectorCapabilities := make([]domain.CapabilityName, 0, len(collectors))

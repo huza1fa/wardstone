@@ -197,6 +197,7 @@ type Investigation struct {
 	Specialist    SpecialistName      `json:"specialist,omitempty"`
 	Routing       *RoutingDecision    `json:"routing,omitempty"`
 	Diagnosis     string              `json:"diagnosis,omitempty"`
+	WorkPackage   *WorkPackage        `json:"work_package,omitempty"`
 	Failure       string              `json:"failure,omitempty"`
 	CreatedAt     time.Time           `json:"created_at"`
 	StartedAt     *time.Time          `json:"started_at,omitempty"`
@@ -234,6 +235,7 @@ type Evidence struct {
 	ID              EvidenceID      `json:"id"`
 	InvestigationID InvestigationID `json:"investigation_id"`
 	Source          ConnectorName   `json:"source"`
+	Capability      CapabilityName  `json:"capability,omitempty"`
 	Kind            string          `json:"kind"`
 	Summary         string          `json:"summary"`
 	Data            json.RawMessage `json:"data"`

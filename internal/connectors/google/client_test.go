@@ -12,10 +12,14 @@ import (
 func TestProbeUsesBoundedReadOnlyDirectoryRequest(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet || request.URL.Path != "/users" || request.URL.Query().Get("customer") != "my_customer" || request.URL.Query().Get("maxResults") != "1" || request.Header.Get("Authorization") != "Bearer access-token" {
+		if request.Method != http.MethodGet || (request.URL.Path != "/users" && request.URL.Path != "/groups") || request.URL.Query().Get("customer") != "my_customer" || request.URL.Query().Get("maxResults") != "1" || request.Header.Get("Authorization") != "Bearer access-token" {
 			t.Fatalf("unexpected request: %s %s auth=%q", request.Method, request.URL.String(), request.Header.Get("Authorization"))
 		}
-		_, _ = writer.Write([]byte(`{"users":[]}`))
+		if request.URL.Path == "/users" {
+			_, _ = writer.Write([]byte(`{"users":[]}`))
+		} else {
+			_, _ = writer.Write([]byte(`{"groups":[]}`))
+		}
 	}))
 	defer server.Close()
 	client, err := NewHTTPClient(server.URL, "access-token", server.Client())
@@ -45,7 +49,7 @@ func TestProbeRejectsOversizedResponse(t *testing.T) {
 
 func TestProbeRejectsWrongSuccessfulResponseShape(t *testing.T) {
 	t.Parallel()
-	for name, body := range map[string]string{"missing": `{}`, "null": `{"users":null}`, "object": `{"users":{}}`, "string": `{"users":"error"}`} {
+	for name, body := range map[string]string{"error": `{"error":"secret"}`, "null": `{"users":null}`, "object": `{"users":{}}`, "string": `{"users":"error"}`} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {

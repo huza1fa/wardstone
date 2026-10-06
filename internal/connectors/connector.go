@@ -25,6 +25,15 @@ type EvidenceCollector interface {
 	Collect(context.Context, domain.Ticket) ([]domain.Evidence, error)
 }
 
+// ProposalValidator is an optional structural extension for connector-owned
+// action semantics. The runtime invokes every installed validator, including
+// collectors outside the active specialist's collection scope. Evidence is
+// limited to the proposal's referenced observations; inputs are isolated copies.
+// Implementations must accept unrelated capabilities and never perform actions.
+type ProposalValidator interface {
+	ValidateProposal(domain.ProposedAction, []domain.Evidence) error
+}
+
 // Prober performs a bounded, read-only connectivity and permission check.
 type Prober interface {
 	Probe(context.Context) error

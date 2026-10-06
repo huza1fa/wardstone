@@ -129,6 +129,16 @@ dialog::backdrop { background: #03070bbd; backdrop-filter: blur(3px); }
 .detail-field { padding: .7rem; border: 1px solid var(--line-soft); border-radius: 8px; background: #0c131b; }
 .detail-field span { display: block; margin-bottom: .3rem; color: #65798b; font-size: .62rem; text-transform: uppercase; }.detail-field strong { font-size: .76rem; }
 .diagnosis { padding: 1rem; border-left: 2px solid var(--blue); color: #b8c5cf; background: #111e2b; font-size: .82rem; line-height: 1.6; white-space: pre-wrap; }
+.report-card, .actions-card, .conversation-card { margin: 1.2rem 0; padding: 1rem; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.dialog-body h4 { margin: 1rem 0 .45rem; font-size: .8rem; }
+.detail-copy, .report-summary, .detail-note { font-size: .8rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.detail-copy { color: #b8c5cf; }.detail-note { margin: .8rem 0 0; color: var(--muted); font-size: .72rem; }.report-summary { margin-top: .7rem; }
+.finding-list, .unknown-list { padding-left: 1.2rem; }.finding-list > li { margin-bottom: .9rem; padding-left: .4rem; border-left: 2px solid var(--green); }.finding-list.assumption > li { border-color: var(--amber); }
+.finding-list p { margin-bottom: .4rem; }
+.evidence-citation { margin: .45rem 0; padding: .55rem .65rem; border: 1px solid var(--line-soft); border-radius: 6px; background: #0c131b; overflow-wrap: anywhere; }
+.evidence-citation code { font-size: .75rem; }.evidence-citation small { display: block; margin-top: .25rem; color: var(--muted); font-size: .68rem; white-space: pre-wrap; }
+.action-detail, .message-detail { margin-top: .85rem; padding-top: .1rem; border-top: 1px solid var(--line); }.policy-result { padding: .6rem; border-left: 2px solid var(--amber); background: #1b201f; }
+.literal-json { padding: .7rem; border: 1px solid var(--line-soft); border-radius: 6px; background: #0c131b; color: #d6e4f0; font-size: .75rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .timeline { margin: 1rem 0 0; padding: 0; list-style: none; }
 .timeline li { position: relative; margin-left: .45rem; padding: 0 0 1rem 1.15rem; border-left: 1px solid #314152; }
 .timeline li::before { content: ""; position: absolute; left: -.25rem; top: .18rem; width: .45rem; height: .45rem; border: 2px solid #101821; border-radius: 50%; background: var(--blue); }

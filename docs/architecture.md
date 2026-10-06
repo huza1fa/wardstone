@@ -47,8 +47,10 @@ specialists must not introduce separate orchestration or authority paths.
 ## Operator surfaces
 
 The embedded web console and the standalone terminal console consume the same
-Bearer-authenticated `/v1/admin/*` API. PostgreSQL remains behind the control
-plane: clients never receive database credentials and approval decisions always
+Bearer-authenticated operator API. Lists and metrics use `/v1/admin/*`; browser
+detail uses the existing `/v1/investigations/{id}`, `/timeline`, and `/messages`
+reads. PostgreSQL remains behind the control plane: clients never receive
+database credentials and approval decisions always
 pass through `approvals.Service`, which owns expiry, concurrency, actor, and
 audit invariants.
 
@@ -57,6 +59,16 @@ Clients poll this model and tolerate partial refresh failures; `/healthz`
 remains a liveness endpoint rather than the source of operational metrics. The
 browser UI stores its operator token only for the tab session. The terminal UI
 runs as a separate process and receives the token from its environment.
+
+Full reports are detail-only and excluded from polling admin lists. The browser
+renders report, citation, argument, policy, and message values as literal text,
+never HTML or evidence-derived URL links. Evidence citation metadata comes from
+`evidence.collected` events: `evidence_id`, `kind`, `capability`, `observed_at`,
+and the connector actor. Legacy metadata may be absent. Proposed actions expose
+their exact argument JSON and digest from `action.proposed`; policy is joined
+by `action_id` from `policy.evaluated`. Conversation loading can fail without
+discarding the report. The terminal console currently loads compact summaries,
+not full detail.
 
 ## Core domain
 
@@ -72,7 +84,10 @@ typed constants.
   moves an investigation to `WAITING_ON_REQUESTER`; a deduplicated reply moves
   it back to `PENDING` and creates a new durable job.
 - `Evidence`: a structured observation with source, kind, human summary,
-  machine-readable data, and observation time.
+  machine-readable data, observation time, and explicit collector capability
+  provenance.
+- `WorkPackage`: a versioned completion report with cited findings, assumptions,
+  unknowns, escalation reason, requester summary, and expected impact.
 - `Connector`: an adapter that registers capability metadata and implements
   either safe query operations, privileged operations, or notification paths.
 - `Capability`: a stable name, description, read/mutate effect, argument schema
@@ -138,6 +153,16 @@ PostgreSQL stores:
 - `jobs`, with available time, lease owner/expiry, attempt count, and dedupe key.
 - `case_messages`, an append-only conversation ledger keyed by connector and
   external message ID.
+- `message_deliveries`, a transactional requester-message outbox with leases,
+  bounded attempts, remote IDs, and delivery state.
+
+The runtime requires schema versions 1 through **8**. Migration 8 adds evidence
+capability provenance and a newest-first case/capability index; it leaves legacy
+provenance empty rather than guessing from connector or kind. It also adds the
+optional `investigations.work_package`, publishable only in the
+`RUNNING` → `COMPLETED` transition and immutable once stored. Report, proposals,
+policy results, outbound result draft, completion, and audit events commit
+together.
 
 Foreign keys preserve the aggregate. JSONB is used for vendor-shaped evidence,
 action arguments, and event details; frequently queried lifecycle fields remain
@@ -177,18 +202,103 @@ stores the outbound message, moves the investigation from `RUNNING` to
 delivers a later reply with a stable comment ID. In one transaction Wardstone
 deduplicates that ID, stores the inbound message, moves the investigation to
 `PENDING`, appends `requester.reply_received` and `investigation.resumed`, and
-enqueues a distinct resume job. The next run receives the complete conversation
-ledger as untrusted model context.
+enqueues a distinct resume job. The next run receives a bounded selection from
+the conversation ledger as untrusted model context.
 
-This slice deliberately stops at durable intake and resume. Sending an outbound
-question through Jira/Slack will use a transactional outbox and a connector
-delivery adapter, rather than making an external HTTP call inside the state
-transition.
+The transactional requester delivery outbox, leased dispatcher, and Jira comment
+adapter are implemented. A send-enabled transition can enqueue delivery in the
+same transaction as the message; external I/O occurs later in the dispatcher,
+with bounded retries for explicitly retryable failures and delivered/failed
+audit events. SHADOW stores drafts, does not enqueue deliveries, and does not
+start the dispatcher. Operator-reviewed sending and Slack delivery remain future
+work.
 
 Events are facts, not commands. Persisting an event does not implicitly publish
-it to a process-local channel. A transactional outbox can be added when an
-external event consumer exists; until then, workers query durable jobs and API
-clients query timelines directly.
+it to a process-local channel. Workers query durable jobs and API clients query
+timelines directly. The requester-message outbox is distinct from a general
+external audit-event publication mechanism.
+
+### Bounded case memory and reports
+
+Every resumed or handed-off run recollects allowed evidence, persists it, then
+reloads observations from the same investigation. Repository filtering applies
+the active specialist's allowed collector capabilities **before** the newest-first
+limit (observation time, then evidence ID). Empty/legacy provenance is hidden
+from model memory. The service additionally requires a nonempty ID, the same
+investigation, an allowed registered **read** capability, and a connector source
+matching that capability. A narrower specialist never receives another role's
+restricted observations just because they are in the same case.
+
+Current-run observations have priority over historical memory, with at most
+**128 observations** in model input. Diagnosis input has a **256 KiB** budget
+(serialized request plus system instructions); orchestration reserves 8 KiB for
+framing/instructions and additional room for warnings. Whole observations are
+omitted rather than truncating their contents. Conversation prioritizes the
+newest 64 messages within 64 KiB and is emitted chronologically. Handoff history
+is limited to 16 valid profile-approved transitions; reasons from broader
+evidence scopes are withheld. Up to 32 collection-gap capabilities are retained
+only when allowed by the current role, without raw historical connector errors.
+Omission and stale/history warnings accompany model context. With no allowed
+observations, the model must ask for a missing fact or explain uncertainty and
+propose no action.
+
+Reports and actions may cite **only IDs actually supplied to that model run**.
+Stored but filtered or budget-omitted observations cannot be cited. All action
+proposals require a nonblank reason and 1–128 unique supplied evidence IDs.
+For a **mutation**, every cited observation must also have been collected in
+the current run, have a nonzero timestamp no older than **15 minutes**, and be
+no more than **one minute in the future**. These checks run when building the
+input and again after the model returns; evidence can age out during the model
+call. A recent prior-run observation is still historical and cannot ground a
+mutation. Stale or historical evidence may support report context or read
+proposals, but does not grant authority. Capability/profile validation and policy
+evaluation still follow citation validation; SHADOW denies all mutations with
+`shadow_mode` and executes no proposed reads.
+
+The detail response optionally includes `work_package` with this version-1
+schema:
+
+| Field | Meaning |
+| --- | --- |
+| `version` | `1` |
+| `summary` | Required nonblank operator summary |
+| `findings` | Findings with `kind` (`verified` or `assumption`), nonblank `statement`, and `evidence_ids` |
+| `unknowns` | Nonblank outstanding questions or gaps |
+| `escalation_reason` | Why operator judgment/authority is needed; empty if none |
+| `requester_summary` | Requester-facing draft, separate from internal findings |
+| `expected_impact` | Expected outcome/impact of proposed next steps |
+
+Minimal example (the citation must be a real supplied ID):
+
+```json
+{
+  "version": 1,
+  "summary": "Direct group membership is missing; operator review is needed.",
+  "findings": [
+    {
+      "kind": "verified",
+      "statement": "The resolved user is not a direct member of the mapped group.",
+      "evidence_ids": ["evidence-id-from-this-case"]
+    }
+  ],
+  "unknowns": ["Whether access is approved for this user"],
+  "escalation_reason": "Business authorization is not established.",
+  "requester_summary": "Your request is ready for operator review.",
+  "expected_impact": "No changes have been made."
+}
+```
+
+Verified findings require citations; assumptions may have none. Reports are
+limited to 64 KiB, 32 findings, 32 unknowns, 32 citations per finding, and 128
+citations overall. Duplicate statements, unknowns, or IDs within a finding,
+unsupported versions/kinds, unknown/case-variant/duplicate JSON fields, null
+fields, invalid text, and unsupplied citations are rejected. The current
+OpenAI-compatible provider requires a work package for a final diagnosis;
+follow-up questions and handoffs cannot include a report, diagnosis, or actions.
+Legacy cases may retain only a diagnosis. A missing diagnosis is filled from the
+report summary. The outbound final draft uses `requester_summary` (or a generic
+review message when it is empty), not the internal report summary, and appends
+proposal/policy information.
 
 ## Concurrency model
 
@@ -206,7 +316,8 @@ Each investigation is a structured unit of concurrency:
 - Results are aggregated in collector registration order, producing stable
   model input and audit processing independent of completion timing.
 - Partial collector failures are recorded and passed to the model as warnings.
-  Cancellation and loss of all useful evidence fail the investigation.
+  Cancellation stops the run; loss of allowed evidence produces explicit
+  uncertainty context so the model can ask a question or return a no-action report.
 - Slow model calls occupy only their investigation worker, not the HTTP server
   or unrelated workers.
 
@@ -276,15 +387,17 @@ redaction is planned and must not be assumed.
    decision is immutable and persisted with its audit event. Only the chosen
    profile's allowed read collectors gather context concurrently.
 5. Successful evidence and structured failures are persisted.
-6. The configured model provider generates a diagnosis and zero or more
-   structured action proposals referencing evidence IDs.
+6. The configured model provider receives bounded, provenance-filtered case
+   memory and generates a structured report and zero or more action proposals
+   referencing supplied evidence IDs, or asks a question/requests a handoff.
 7. Capability names and argument JSON are validated, action digests are
    computed, and proposals are persisted immutably.
 8. Policy evaluates each proposal. SHADOW mode forces every mutating action to
    `DENY` with reason `shadow_mode`; read capabilities may be allowed but are not
    executed from model proposals in this slice.
 9. The investigation completes and its ordered timeline plus outbound drafts are
-   available by API. SHADOW mode never posts model-generated content to Jira.
+   available by API. SHADOW mode never sends requester messages or performs
+   connector writes.
 
 No Slack approval is requested and no Google mutation is possible in this
 milestone. Approval and executor contracts/schema exist to make the later path

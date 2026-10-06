@@ -69,13 +69,20 @@ func run(logger *slog.Logger) error {
 		TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: settings.ModelTimeout,
 	}}
 	var googleClient *google.HTTPClient
-	collectors := make([]connectors.EvidenceCollector, 0, 2)
+	collectors := make([]connectors.EvidenceCollector, 0, 3)
 	if settings.GoogleConfigured() {
 		googleClient, err = google.NewHTTPClient(settings.GoogleBaseURL, settings.GoogleAccessToken, httpClient)
 		if err != nil {
 			return err
 		}
 		collectors = append(collectors, google.UserCollector{Client: googleClient}, google.GroupCollector{Client: googleClient})
+		if resources := settings.AccessHelp.Resources(); len(resources) > 0 {
+			accessCollector, err := google.NewAccessCollector(googleClient, resources)
+			if err != nil {
+				return err
+			}
+			collectors = append(collectors, accessCollector)
+		}
 	}
 	var model *models.OpenAICompatible
 	if settings.ModelConfigured() {
@@ -103,7 +110,7 @@ func run(logger *slog.Logger) error {
 		MaxConcurrentCollectors:  settings.MaxCollectors,
 		CollectorTimeout:         settings.CollectorTimeout,
 		ModelTimeout:             settings.ModelTimeout,
-		PromptVersion:            "shadow-v1",
+		PromptVersion:            "shadow-v2",
 		MaxHandoffs:              settings.MaxHandoffs,
 		MaxFollowUpQuestions:     settings.MaxFollowUpQuestions,
 		DeliverRequesterMessages: settings.Mode != domain.OperatingModeShadow,

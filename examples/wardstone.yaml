@@ -1,4 +1,12 @@
+access_help:
+  # Replace with administrator-owned resource names and actual Google groups.
+  # This mapping is context for direct membership reads, not application access proof.
+  resources:
+    Engineering tools: engineering-tools@example.com
+
 capabilities:
+  google.access.inspect:
+    mode: allow
   google.users.get:
     mode: allow
   google.users.list_groups:
@@ -10,7 +18,7 @@ capabilities:
   google.groups.add_member:
     mode: approval
   google.groups.remove_member:
-    mode: approval
+    mode: deny
 
 specialists:
   - name: help_desk
@@ -19,7 +27,11 @@ specialists:
       hand off confirmed identity or entitlement work to access_management,
       vendor risk reviews to vendor_review, and internal systems or
       documentation questions to systems_knowledge.
+      For access inspections, ask only for the exact configured resource name
+      when clarification_requirements are present. Escalate immutable selector
+      errors to an operator rather than repeatedly questioning the requester.
     collectors:
+      - google.access.inspect
       - google.users.get
       - google.users.list_groups
     handoff_to:
@@ -29,13 +41,19 @@ specialists:
   - name: access_management
     instructions: >-
       Investigate identity, group membership, licensing, roles, and
-      entitlements. Propose only evidence-backed access changes.
+      entitlements. Use google.access_request observations for bounded access
+      help. Ask for the exact configured resource name when it is absent;
+      escalate operator_intervention_required selectors without a follow-up
+      loop. Propose google.groups.add_member only for an active user whose
+      complete current inspection establishes missing direct membership in
+      the configured target group. Never infer effective application access
+      or business authorization. Membership removal is outside this workflow.
     collectors:
+      - google.access.inspect
       - google.users.get
       - google.users.list_groups
     capabilities:
       - google.groups.add_member
-      - google.groups.remove_member
     handoff_to:
       - help_desk
   - name: vendor_review

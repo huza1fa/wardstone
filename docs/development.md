@@ -17,15 +17,19 @@ explicitly, for example:
 
 ```sh
 docker compose exec -T postgres psql -U wardstone_admin -d wardstone \
-  < migrations/000007_routing_decisions.sql
+  < migrations/000008_case_memory_reports.sql
 ```
 
 Never reapply a migration whose version already appears in
 `schema_migrations`.
 
-The current runtime requires schema version 7. Apply any missing migrations in
+The current runtime requires schema version 8. Apply any missing migrations in
 numeric order. Migration 7 preserves old cases without inventing provenance;
-new dispatches record their original routing decision.
+new dispatches record their original routing decision. Migration 8 adds evidence
+collector capability provenance, a newest-first case/capability index, and an
+immutable completion-time `work_package`. Existing evidence keeps an empty
+capability and is hidden from model case memory; existing investigations may
+have no report.
 
 ## Specialist profiles
 
@@ -76,7 +80,13 @@ kept in browser session storage for the current tab and removed when you
 disconnect.
 
 The console shows the operating mode, investigation and job status, recent
-diagnoses and timelines, and pending approval requests. Browser and terminal
+diagnoses and timelines, and pending approval requests. Investigation detail
+also shows the structured report, verified findings separately from assumptions
+and unknowns, literal evidence IDs with available timeline provenance and
+observation times, exact proposed argument JSON, policy outcomes, and requester
+conversation/drafts. Observation age is calculated at display time; it does not
+prove that a citation was collected in the current run. Missing legacy reports
+and missing provenance are shown explicitly. Browser and terminal
 approval decisions both use the same authenticated API and approval service.
 Wardstone is still restricted to SHADOW mode, so the approval queue normally
 remains empty in the current milestone.
@@ -112,8 +122,99 @@ operation; `http://localhost` and loopback IPs are accepted only for test mocks.
 Do not reuse the outbound Jira API token as the inbound webhook secret.
 
 SHADOW mode stores model-generated questions and results as operator-visible
-drafts only. It does not call Jira or require **Add comments** permission. The
-delivery outbox is reserved for a future operator-reviewed sending workflow.
+drafts only. It does not post requester comments or require **Add comments**
+permission. Explicit connector-readiness probes can still read Jira metadata.
+The transactional `message_deliveries` outbox, leased dispatcher, and Jira
+comment sender already exist. SHADOW disables delivery enqueueing and dispatcher
+startup; enabling an operator-reviewed sending workflow remains future work.
+
+## Bounded access help
+
+Configure an administrator-owned resource-to-Google-group map in
+`WARDSTONE_CONFIG_FILE`:
+
+```yaml
+access_help:
+  resources:
+    Engineering tools: engineering-tools@example.com
+    Finance reports: finance-reports@example.com
+```
+
+Resource names are trimmed in configuration, matched case-insensitively, and
+must be unique after normalization. The map accepts at most 128 entries, each
+name at most 128 bytes with no control characters, and plain group email
+addresses. An omitted or empty map is valid and leaves the access collector
+unregistered. With Google configured and a nonempty map, profiles must allow
+the read collector `google.access.inspect` to receive its observations. The
+example grants this collector to Help Desk and Access Management; proposal
+permissions and capability policy remain separate.
+
+Send the exact structured field keys in the flattened Jira `fields` map, each
+with exactly one value:
+
+```json
+{
+  "external_id": "HELP-42",
+  "summary": "Help with Engineering tools access",
+  "reporter_email": "requester@example.com",
+  "request_type": "Access request",
+  "fields": {
+    "Access resource": ["Engineering tools"],
+    "Access user": ["requester@example.com"]
+  }
+}
+```
+
+- **Access resource** must match one configured name in its entirety, ignoring
+  letter case. A supplied field is not whitespace-trimmed. Unknown resources,
+  blank/multiple values, duplicate near-matching keys, or non-exact field keys
+  require operator intervention. The collector does not infer a resource from ticket
+  prose, keywords, group addresses, or URLs.
+- Only when **Access resource is absent** may the latest durable inbound reply
+  from the ticket's own requester and source supply it. After trimming outer
+  whitespace, the **whole reply** must be the configured resource name, such as
+  `Engineering tools`. A sentence like `Please grant Engineering tools access`
+  does not match. An explicitly supplied invalid resource field cannot be
+  overridden by a reply. Reply intake authenticates the webhook, checks the
+  reporter identity, and deduplicates stable comment IDs.
+- **Access user** must be one plain email address. If absent, the ticket reporter
+  is used. An explicitly supplied invalid field cannot silently default to the
+  reporter; requester free text cannot select another target user.
+
+Only an absent resource with a valid user is reply-resolvable. Invalid explicit
+selectors or a missing/malformed target user produce
+`operator_intervention_required` with `escalation_requirements`, without external
+reads. An operator must correct the selectors and submit a new external case ID:
+re-intake deduplicates an existing case and does not refresh its original fields.
+Do not repeatedly ask the requester to repair immutable case metadata.
+
+For a missing resource, the collector emits a structured `google.access_request`
+observation with unknowns and clarification requirements without performing the
+directory reads. Otherwise it reads the selected user
+and mapped group, verifies returned identities, then checks that user's direct
+`USER` membership using the returned IDs. Results distinguish `member`,
+`not_member`, and `unknown`; unavailable, forbidden, or malformed responses
+remain unknowns. A not-found membership response means no direct membership
+only after both user and group were resolved successfully.
+
+When the access collector is installed, deterministic proposal validation applies
+even to specialists that cannot run it. A group addition must cite a complete,
+fresh current-run inspection of the exact configured group and nonsuspended
+target user with no unknowns, clarifications, or escalations and missing direct
+membership. Contradictory or mismatched proposals fail before reports, actions,
+or requester drafts are published. Group removals are outside this bounded
+workflow and are rejected; the example disables them.
+
+**Scope:** the map is administrator context, not authorization to grant access.
+Direct Google group membership does not prove effective application access,
+nested/transitive membership, licensing, provisioning, or business approval.
+Read observations and proposed changes are review material. SHADOW sends no
+requester messages and performs no Google writes, even when configuration lists
+a mutation capability in approval mode.
+
+See [case memory and reports](architecture.md#bounded-case-memory-and-reports)
+for input budgets, provenance filtering, report schema, and mutation-citation
+freshness rules.
 
 ## Jira ticket routing metadata
 
@@ -243,3 +344,7 @@ flags are `-url`, `-actor`, and `-refresh`.
 Use `1`/`2`/`3` or `tab` to switch views, arrows or `j`/`k` to move, `r` to
 refresh, and `q` to quit. On the approvals view, `a` grants and `d` denies; both
 require a final `y` confirmation.
+
+The terminal console polls compact admin investigation summaries; it does not
+load full investigation reports or conversation ledgers. Use the web detail
+view or authenticated detail API to review the work package and exact proposals.

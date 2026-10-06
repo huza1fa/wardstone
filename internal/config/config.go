@@ -11,12 +11,14 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/wardstone-project/wardstone/internal/connectors/google"
 	"github.com/wardstone-project/wardstone/internal/domain"
 	"github.com/wardstone-project/wardstone/internal/policy"
 	"github.com/wardstone-project/wardstone/internal/specialists"
 )
 
 type Config struct {
+	AccessHelp           AccessHelpConfig
 	DatabaseURL          string
 	ListenAddress        string
 	Mode                 domain.OperatingMode
@@ -42,6 +44,17 @@ type Config struct {
 	Specialists          []specialists.Profile
 	RoutingRules         []specialists.RouteRule
 	IntentClassification specialists.IntentConfig
+}
+
+type AccessHelpConfig struct{ resources map[string]string }
+
+// Resources returns a defensive copy of the validated administrator mapping.
+func (c AccessHelpConfig) Resources() map[string]string {
+	copy := make(map[string]string, len(c.resources))
+	for name, group := range c.resources {
+		copy[name] = group
+	}
+	return copy
 }
 
 func Load() (Config, error) {
@@ -144,6 +157,9 @@ func loadPolicy(path string, config *Config) error {
 		return errors.New("configuration file must be at most 1 MiB")
 	}
 	var raw struct {
+		AccessHelp struct {
+			Resources map[string]string `yaml:"resources"`
+		} `yaml:"access_help"`
 		Capabilities map[domain.CapabilityName]struct {
 			Mode policy.RuleMode `yaml:"mode"`
 		} `yaml:"capabilities"`
@@ -172,6 +188,11 @@ func loadPolicy(path string, config *Config) error {
 	if len(raw.Capabilities) == 0 {
 		return errors.New("configuration must define at least one capability policy")
 	}
+	resources, err := google.ValidateAccessResources(raw.AccessHelp.Resources)
+	if err != nil {
+		return err
+	}
+	config.AccessHelp = AccessHelpConfig{resources: resources}
 	config.PolicyRules = make(map[domain.CapabilityName]policy.RuleMode, len(raw.Capabilities))
 	for name, entry := range raw.Capabilities {
 		if name == "" {

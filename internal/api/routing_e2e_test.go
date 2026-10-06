@@ -408,7 +408,11 @@ func routingModelServer(t *testing.T, classifications, diagnoses *atomic.Int64) 
 					http.Error(writer, "vendor received unauthorized evidence", http.StatusBadRequest)
 					return
 				}
-				output = agent.Result{Diagnosis: "Vendor review completed with ticket context."}
+				output = agent.Result{Diagnosis: "Vendor review completed with ticket context.", WorkPackage: &domain.WorkPackage{
+					Version: 1, Summary: "Vendor review completed with ticket context.",
+					Findings: []domain.Finding{{Kind: "assumption", Statement: "Vendor review is based on supplied ticket context only."}},
+					Unknowns: []string{"No independent vendor evidence was collected."}, RequesterSummary: "Vendor review completed with ticket context.",
+				}}
 			case specialists.HelpDesk:
 				if len(diagnosis.Conversation) == 0 {
 					output = agent.Result{FollowUpQuestion: "Which system needs access?"}
@@ -420,7 +424,12 @@ func routingModelServer(t *testing.T, classifications, diagnoses *atomic.Int64) 
 					http.Error(writer, "access evidence missing", http.StatusBadRequest)
 					return
 				}
-				output = agent.Result{Diagnosis: "Missing membership confirmed; grant proposed for operator review.", Actions: []agent.ProposedAction{{Capability: "test.access.grant", Arguments: json.RawMessage(`{"group":"Engineering"}`), Reason: "Requester and directory evidence confirm missing access.", EvidenceIDs: []domain.EvidenceID{diagnosis.Evidence[0].ID}}}}
+				output = agent.Result{Diagnosis: "Missing membership confirmed; grant proposed for operator review.",
+					WorkPackage: &domain.WorkPackage{Version: 1, Summary: "Missing membership confirmed; grant proposed for operator review.",
+						Findings:         []domain.Finding{{Kind: "verified", Statement: "Requested group membership is missing.", EvidenceIDs: []domain.EvidenceID{diagnosis.Evidence[0].ID}}},
+						RequesterSummary: "Missing membership confirmed; grant proposed for operator review.", ExpectedImpact: "An operator-reviewed grant could restore access.",
+					},
+					Actions: []agent.ProposedAction{{Capability: "test.access.grant", Arguments: json.RawMessage(`{"group":"Engineering"}`), Reason: "Requester and directory evidence confirm missing access.", EvidenceIDs: []domain.EvidenceID{diagnosis.Evidence[0].ID}}}}
 			default:
 				http.Error(writer, "unexpected role", http.StatusBadRequest)
 				return

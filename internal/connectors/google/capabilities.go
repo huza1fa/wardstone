@@ -15,6 +15,7 @@ import (
 const Name domain.ConnectorName = "google"
 
 const (
+	AccessInspect      domain.CapabilityName = "google.access.inspect"
 	UsersGet           domain.CapabilityName = "google.users.get"
 	UsersListGroups    domain.CapabilityName = "google.users.list_groups"
 	GroupsGet          domain.CapabilityName = "google.groups.get"
@@ -25,6 +26,7 @@ const (
 
 func Capabilities() []capabilities.Definition {
 	return []capabilities.Definition{
+		{Name: AccessInspect, Connector: Name, Description: "Inspect administrator-configured access request user, group, and direct membership; selectors come only from ticket fields and authenticated requester context", Effect: domain.EffectRead, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validateAccessInspect},
 		{Name: UsersGet, Connector: Name, Description: "Get a Google Workspace user", Effect: domain.EffectRead, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validateUser},
 		{Name: UsersListGroups, Connector: Name, Description: "List groups for a Google Workspace user", Effect: domain.EffectRead, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validateUser},
 		{Name: GroupsGet, Connector: Name, Description: "Get a Google Workspace group", Effect: domain.EffectRead, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validateGroup},
@@ -32,6 +34,15 @@ func Capabilities() []capabilities.Definition {
 		{Name: GroupsAddMember, Connector: Name, Description: "Add a member to a Google Workspace group", Effect: domain.EffectMutate, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validateGroupMember},
 		{Name: GroupsRemoveMember, Connector: Name, Description: "Remove a member from a Google Workspace group", Effect: domain.EffectMutate, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validateGroupMember},
 	}
+}
+
+// The collector owns selectors; this capability accepts no model-supplied keys.
+func validateAccessInspect(data json.RawMessage) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return errors.New("access inspection accepts only an empty argument object")
+	}
+	return decodeStrict(data, &struct{}{})
 }
 
 func validateUser(data json.RawMessage) error {

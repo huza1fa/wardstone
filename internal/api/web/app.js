@@ -19,6 +19,7 @@
   let toastTimer;
   let setupRevision = 0;
   let activeSetupProbe = "";
+  let detailRevision = 0;
 
   function node(tag, options = {}, children = []) {
     const element = document.createElement(tag);
@@ -240,6 +241,7 @@
   }
 
   async function showInvestigation(id) {
+    const revision = ++detailRevision;
     const sessionToken = state.token;
     const dialog = byId("investigation-dialog");
     const body = byId("dialog-body");
@@ -247,28 +249,121 @@
     body.replaceChildren(node("p", { text: "Loading investigation…" }));
     dialog.showModal();
     try {
-      const [investigation, timelinePayload] = await Promise.all([
+      const [investigation, timelinePayload, messagesPayload] = await Promise.all([
         api(`/v1/investigations/${encodeURIComponent(id)}`),
         api(`/v1/investigations/${encodeURIComponent(id)}/timeline`),
+        api(`/v1/investigations/${encodeURIComponent(id)}/messages`).catch((error) => {
+          if (error.status === 401) throw error;
+          return { error: "Conversation could not be loaded." };
+        }),
       ]);
-      if (state.token !== sessionToken) return;
+      if (state.token !== sessionToken || revision !== detailRevision) return;
       const fields = node("div", { className: "detail-grid" }, [
         detailField("Status", investigation.status), detailField("Ticket ID", investigation.ticket_id),
         detailField("Current specialist", investigation.specialist || "Unassigned"), detailField("Model", investigation.model || "—"), detailField("Prompt", investigation.prompt_version || "—"),
         detailField("Started", formatDate(investigation.started_at)), detailField("Completed", formatDate(investigation.completed_at)),
       ]);
       const timeline = node("ol", { className: "timeline" });
-      for (const event of timelinePayload.events || []) {
+      const events = timelinePayload.events || [];
+      const evidence = evidenceIndex(events);
+      for (const event of events) {
         const entry = node("li", {}, [node("strong", { text: humanize(event.type) }), node("small", { text: `${formatDate(event.occurred_at)} · ${event.actor_id || event.actor_type}` })]);
         const description = describeRoutingEvent(event);
         if (description) entry.append(node("p", { text: description }));
+        if (event.type === "evidence.collected") entry.append(evidenceCitation(event.data?.evidence_id, evidence));
+        if (event.type === "action.proposed") entry.append(node("pre", { className: "literal-json", text: JSON.stringify(event.data?.arguments ?? null, null, 2) }));
         timeline.append(entry);
       }
-      body.replaceChildren(fields, routingCard(investigation.routing), node("h3", { text: investigation.failure ? "Failure" : "Diagnosis" }), node("p", { className: "diagnosis", text: investigation.failure || investigation.diagnosis || "No diagnosis yet." }), node("h3", { text: "Audit timeline" }), timeline);
+      body.replaceChildren(fields, routingCard(investigation.routing), reportCard(investigation.work_package, evidence), node("h3", { text: investigation.failure ? "Failure" : "Diagnosis" }), node("p", { className: "diagnosis", text: investigation.failure || investigation.diagnosis || "No diagnosis yet." }), actionsCard(events, evidence), conversationCard(messagesPayload), node("h3", { text: "Audit timeline" }), timeline);
     } catch (error) {
-      if (state.token !== sessionToken) return;
+      if (state.token !== sessionToken || revision !== detailRevision) return;
       body.replaceChildren(emptyState("!", "Could not load investigation", error.message));
     }
+  }
+
+  function evidenceIndex(events) {
+    const evidence = new Map();
+    for (const event of events) {
+      if (event.type === "evidence.collected" && event.data?.evidence_id) evidence.set(event.data.evidence_id, event);
+    }
+    return evidence;
+  }
+
+  function observationFreshness(value) {
+    const observed = new Date(value).getTime();
+    if (!value || !Number.isFinite(observed) || observed <= 0) return "Observation time unknown";
+    const age = Date.now() - observed;
+    if (age < -60000) return "Future-dated observation";
+    if (age > 15 * 60000) return "Stale observation (at display time)";
+    return "Recent observation (at display time)";
+  }
+
+  function evidenceCitation(id, evidence) {
+    const citation = node("div", { className: "evidence-citation" }, [node("code", { text: id || "Evidence ID not recorded" })]);
+    const event = evidence.get(id);
+    if (!event) {
+      citation.append(node("small", { text: "Provenance and observation time not recorded in timeline." }));
+      return citation;
+    }
+    const data = event.data || {};
+    citation.append(node("small", { text: `Source: ${event.actor_type === "CONNECTOR" ? event.actor_id || "unknown" : "unknown"} · Capability: ${data.capability || "not recorded"} · Kind: ${data.kind || "not recorded"}` }), node("small", { text: `Observed: ${data.observed_at || "not recorded"} · ${observationFreshness(data.observed_at)}` }));
+    return citation;
+  }
+
+  function reportCard(report, evidence) {
+    const card = node("section", { className: "report-card" }, [node("h3", { text: "Investigation report" })]);
+    if (!report) {
+      card.append(node("p", { className: "detail-copy", text: "No structured report was recorded for this investigation." }));
+      return card;
+    }
+    card.append(node("small", { className: "detail-copy", text: `Report version ${report.version}` }), node("p", { className: "report-summary", text: report.summary }));
+    for (const [kind, label] of [["verified", "Verified findings"], ["assumption", "Assumptions"]]) {
+      const findings = (report.findings || []).filter((finding) => finding.kind === kind);
+      const list = node("ul", { className: `finding-list ${kind}` });
+      for (const finding of findings) {
+        const item = node("li", {}, [node("p", { className: "detail-copy", text: finding.statement })]);
+        for (const id of finding.evidence_ids || []) item.append(evidenceCitation(id, evidence));
+        if (!finding.evidence_ids?.length) item.append(node("small", { className: "detail-copy", text: "No evidence cited." }));
+        list.append(item);
+      }
+      card.append(node("h4", { text: label }), findings.length ? list : node("p", { className: "detail-copy", text: "None recorded." }));
+    }
+    card.append(node("h4", { text: "Unknowns" }), report.unknowns?.length ? node("ul", { className: "unknown-list" }, report.unknowns.map((unknown) => node("li", { className: "detail-copy", text: unknown }))) : node("p", { className: "detail-copy", text: "None recorded." }));
+    for (const [label, value] of [["Escalation reason", report.escalation_reason], ["Expected impact", report.expected_impact], ["Requester summary draft", report.requester_summary]]) {
+      card.append(node("h4", { text: label }), node("p", { className: "detail-copy", text: value || "Not provided." }));
+    }
+    card.append(node("p", { className: "detail-note", text: "Observation age is shown at display time. Prior-run evidence is context only; a recent timestamp alone does not establish current-run mutation eligibility." }));
+    return card;
+  }
+
+  function actionsCard(events, evidence) {
+    const card = node("section", { className: "actions-card" }, [node("h3", { text: "Proposed actions and policy" })]);
+    const proposals = events.filter((event) => event.type === "action.proposed");
+    if (!proposals.length) card.append(node("p", { className: "detail-copy", text: "No proposed actions recorded." }));
+    for (const event of proposals) {
+      const data = event.data || {};
+      const action = node("article", { className: "action-detail" }, [node("h4", { text: data.capability || "Capability not recorded" }), detailField("Action ID", data.action_id), node("p", { className: "detail-copy", text: data.reason || "No proposal reason recorded." }), node("h4", { text: "Exact arguments (JSON)" }), node("pre", { className: "literal-json", text: JSON.stringify(data.arguments ?? null, null, 2) })]);
+      if (data.digest) action.append(detailField("Action digest", data.digest));
+      action.append(node("h4", { text: "Evidence citations" }));
+      for (const id of data.evidence_ids || []) action.append(evidenceCitation(id, evidence));
+      if (!data.evidence_ids?.length) action.append(node("p", { className: "detail-copy", text: "No evidence citations recorded." }));
+      const policies = events.filter((item) => item.type === "policy.evaluated" && data.action_id && item.data?.action_id === data.action_id);
+      action.append(node("h4", { text: "Policy evaluation" }));
+      for (const policy of policies) action.append(node("p", { className: "detail-copy policy-result", text: `${policy.data.decision || "Unknown decision"} · ${policy.data.reason || "No policy reason recorded."}` }));
+      if (!policies.length) action.append(node("p", { className: "detail-copy", text: "Policy evaluation not recorded." }));
+      card.append(action);
+    }
+    return card;
+  }
+
+  function conversationCard(payload) {
+    const card = node("section", { className: "conversation-card" }, [node("h3", { text: "Requester conversation" }), node("p", { className: "detail-note", text: "Outbound messages are drafts in SHADOW mode. This conversation ledger does not confirm delivery." })]);
+    if (payload.error) card.append(node("p", { className: "detail-copy", text: payload.error }));
+    else if (!payload.messages?.length) card.append(node("p", { className: "detail-copy", text: "No messages recorded." }));
+    for (const message of payload.messages || []) {
+      card.append(node("article", { className: "message-detail" }, [node("h4", { text: message.direction === "OUTBOUND" ? "Wardstone outbound / draft" : message.direction === "INBOUND" ? "Requester reply" : "Message" }), node("small", { className: "detail-copy", text: `${formatDate(message.created_at)} · ${message.author || "Unknown author"} · ${message.source || "Unknown source"}` }), node("p", { className: "detail-copy", text: message.body })]));
+    }
+    return card;
   }
 
   function detailField(label, value) {
@@ -304,6 +399,8 @@
     if (event.type === "specialist.handed_off") {
       return [data.from && data.to ? `${data.from} → ${data.to}` : "Specialist handoff", data.reason].filter(Boolean).join(" · ");
     }
+    if (event.type === "action.proposed") return [data.action_id && `Action: ${data.action_id}`, data.capability, data.reason].filter(Boolean).join(" · ");
+    if (event.type === "policy.evaluated") return [data.action_id && `Action: ${data.action_id}`, data.decision, data.reason].filter(Boolean).join(" · ");
     return "";
   }
 
@@ -367,6 +464,7 @@
   }
 
   function disconnect() {
+    detailRevision++;
     setupRevision++;
     activeSetupProbe = "";
     state.token = "";
