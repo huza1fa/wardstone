@@ -156,7 +156,7 @@ PostgreSQL stores:
 - `message_deliveries`, a transactional requester-message outbox with leases,
   bounded attempts, remote IDs, and delivery state.
 
-The runtime requires schema versions 1 through **8**. Migration 8 adds evidence
+The runtime requires schema versions 1 through **9**. Migration 8 adds evidence
 capability provenance and a newest-first case/capability index; it leaves legacy
 provenance empty rather than guessing from connector or kind. It also adds the
 optional `investigations.work_package`, publishable only in the
@@ -210,8 +210,8 @@ adapter are implemented. A send-enabled transition can enqueue delivery in the
 same transaction as the message; external I/O occurs later in the dispatcher,
 with bounded retries for explicitly retryable failures and delivered/failed
 audit events. SHADOW stores drafts, does not enqueue deliveries, and does not
-start the dispatcher. Operator-reviewed sending and Slack delivery remain future
-work.
+start the dispatcher. REVIEW starts a dispatcher that claims only messages
+with immutable operator reviews. Slack delivery remains future work.
 
 Events are facts, not commands. Persisting an event does not implicitly publish
 it to a process-local channel. Workers query durable jobs and API clients query
@@ -267,6 +267,7 @@ schema:
 | `escalation_reason` | Why operator judgment/authority is needed; empty if none |
 | `requester_summary` | Requester-facing draft, separate from internal findings |
 | `expected_impact` | Expected outcome/impact of proposed next steps |
+| `risk_assessment` | Optional provisional vendor rating, rationale, and evidence IDs |
 
 Minimal example (the citation must be a real supplied ID):
 
@@ -422,6 +423,61 @@ configuration and are never returned through the API. Each completed probe logs
 only its fixed component name, stable result code, and duration.
 
 ## Failure, cancellation, timeout, and retry design
+
+### Reviewed Jira delivery
+
+Migration 9 adds immutable review text, actor, time, and original draft SHA-256
+to `message_deliveries`. REVIEW never automatically enqueues model output. An
+operator-authenticated review transaction locks the case, checks source,
+direction, draft digest, current state, and latest message, then inserts the
+exact reviewed text and its audit event. Identical concurrent reviews return
+the same delivery; a changed review conflicts. Original case messages remain
+immutable. Resumed reasoning uses approved text rather than superseded drafts.
+
+The REVIEW dispatcher excludes legacy unreviewed rows and suppresses drafts
+already superseded at claim time. Jira POSTs are not exactly-once operations:
+timeouts, malformed acknowledgements, server failures, and expired running
+leases can have unknown remote outcomes. These stop for operator reconciliation;
+only an explicit throttle response is retried automatically. Pending deliveries
+remain durable across restarts. No automatic reconciliation/resend UI exists yet.
+
+### Bounded specialist research
+
+The research connector registers separate vendor and knowledge read capabilities.
+Each selects from an administrator-owned catalog using an exact structured field
+or a whole authenticated requester reply. Neither ticket URLs nor model output
+can choose fetch targets. Vendor catalogs permit public HTTPS text; knowledge
+catalogs also permit configured Markdown/plain-text files resolved relative to
+the policy file. Public HTTP uses no credentials, proxy, or redirects and checks
+resolved addresses at the actual dial boundary. Documents have count, download,
+and excerpt budgets; unavailable sources remain explicit gaps.
+
+Observations retain title, configured URL, content hash, claim type, truncation,
+and observation time. The audit timeline omits document bodies and local paths.
+Vendor claims are evidence of what a vendor states, not independent attestations.
+Known risk ratings require a collected vendor-document citation; absent documents
+permit only UNKNOWN. Risk is a provisional model assessment, not authorization.
+
+Current-run selector observations constrain question/report boundaries. Known
+operator configuration errors produce final escalation reports; unresolved
+research selectors request an exact name; resolved research selectors produce
+reports with remaining gaps as unknowns. Historical observations cannot impose
+these current-run constraints. Handoff descriptions cover only allowed targets.
+
+OpenRouter uses a strict schema with disjoint nested question, handoff, and report
+variants. Registered capability argument schemas constrain object keys in that provider
+wire schema. Capabilities without schema metadata use a JSON-string argument
+fallback. Both decode to the ordinary action contract before validation.
+Other compatible providers retain JSON-object mode unless schema output is
+explicitly enabled. Every provider still passes citation, capability, argument,
+handoff, freshness, policy, and report checks. Output limits are 512 tokens for
+classification and 4096 for diagnosis; responses truncated at the limit fail.
+
+Mapped access requests also receive a local selector/configuration observation
+when Google is unconfigured. It records unknown membership and an operator gap,
+and performs no Directory calls. It does not invent observations or permissions.
+
+### Recovery behavior
 
 | Boundary | Behavior |
 | --- | --- |

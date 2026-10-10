@@ -27,6 +27,16 @@ func NewAccessCollector(client AccessClient, resources map[string]string) (*Acce
 	return &AccessCollector{client: client, resources: copy}, nil
 }
 
+// NewUnconfiguredAccessCollector still supplies administrator-owned selectors
+// and the connector-readiness gap. It cannot perform Directory calls.
+func NewUnconfiguredAccessCollector(resources map[string]string) (*AccessCollector, error) {
+	copy, err := ValidateAccessResources(resources)
+	if err != nil {
+		return nil, err
+	}
+	return &AccessCollector{resources: copy}, nil
+}
+
 func (*AccessCollector) Name() domain.ConnectorName        { return Name }
 func (*AccessCollector) Capability() domain.CapabilityName { return AccessInspect }
 
@@ -109,6 +119,13 @@ func (c *AccessCollector) CollectCase(ctx context.Context, ticket domain.Ticket,
 		}
 	} else {
 		data.UserEmail = strings.ToLower(user)
+	}
+	if c.client == nil {
+		data.Status = "operator_intervention_required"
+		data.Unknowns = append(data.Unknowns, AccessUnknown{"connector", "google_not_configured"})
+		data.Escalations = append(data.Escalations, "Google Workspace is not configured. An operator must configure and test Directory read access before membership can be inspected. A requester reply cannot resolve missing connector credentials.")
+		data.Clarifications = []string{}
+		return accessEvidence(data)
 	}
 	if len(data.Escalations) > 0 {
 		data.Status = "operator_intervention_required"

@@ -412,6 +412,7 @@ func routingModelServer(t *testing.T, classifications, diagnoses *atomic.Int64) 
 					Version: 1, Summary: "Vendor review completed with ticket context.",
 					Findings: []domain.Finding{{Kind: "assumption", Statement: "Vendor review is based on supplied ticket context only."}},
 					Unknowns: []string{"No independent vendor evidence was collected."}, RequesterSummary: "Vendor review completed with ticket context.",
+					RiskAssessment: &domain.RiskAssessment{Rating: "UNKNOWN", Rationale: "No vendor documents were collected."},
 				}}
 			case specialists.HelpDesk:
 				if len(diagnosis.Conversation) == 0 {

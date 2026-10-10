@@ -277,3 +277,57 @@ func TestModelRedirectDoesNotForwardTicketOrCredentials(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenRouterProbeUsesNestedEndpointMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/models/openai/gpt-4.1-mini/endpoints" {
+			t.Errorf("probe route=%s %s", r.Method, r.URL.Path)
+		}
+		w.Write([]byte(`{"data":{"id":"openai/gpt-4.1-mini","endpoints":[]}}`))
+	}))
+	defer server.Close()
+	provider, err := NewOpenAICompatible(server.URL, "test-key", "openai/gpt-4.1-mini", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.openRouter = true
+	if err := provider.Probe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestModelBudgetsAndTruncation(t *testing.T) {
+	for _, intent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "diagnosis", true: "intent"}[intent], func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					MaxTokens int `json:"max_tokens"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				want := 4096
+				if intent {
+					want = 512
+				}
+				if body.MaxTokens != want {
+					t.Errorf("output budget=%d want=%d", body.MaxTokens, want)
+				}
+				w.Write([]byte(`{"choices":[{"finish_reason":"length","message":{"content":"{}"}}]}`))
+			}))
+			defer server.Close()
+			provider, err := NewOpenAICompatible(server.URL, "", "test", server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if intent {
+				_, err = provider.ClassifyIntent(context.Background(), agent.IntentRequest{})
+			} else {
+				_, err = provider.Diagnose(context.Background(), agent.Request{})
+			}
+			if err == nil || !strings.Contains(err.Error(), "token budget") {
+				t.Fatalf("truncated output accepted: %v", err)
+			}
+		})
+	}
+}

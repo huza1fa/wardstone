@@ -17,19 +17,20 @@ explicitly, for example:
 
 ```sh
 docker compose exec -T postgres psql -U wardstone_admin -d wardstone \
-  < migrations/000008_case_memory_reports.sql
+  < migrations/000009_reviewed_messages.sql
 ```
 
 Never reapply a migration whose version already appears in
 `schema_migrations`.
 
-The current runtime requires schema version 8. Apply any missing migrations in
+The current runtime requires schema version 9. Apply any missing migrations in
 numeric order. Migration 7 preserves old cases without inventing provenance;
 new dispatches record their original routing decision. Migration 8 adds evidence
 collector capability provenance, a newest-first case/capability index, and an
 immutable completion-time `work_package`. Existing evidence keeps an empty
 capability and is hidden from model case memory; existing investigations may
-have no report.
+have no report. Migration 9 adds immutable exact-text message reviews; legacy
+delivery rows retain no review and are excluded from the REVIEW dispatcher.
 
 ## Specialist profiles
 
@@ -41,9 +42,9 @@ specialist. A profile never grants execution authority—every proposal still pa
 capability validation and policy.
 
 The example policy includes Help Desk, Access Management, Vendor Review, and
-Systems Knowledge profiles. Vendor Review and Systems Knowledge intentionally
-have no connector permissions until their bounded, read-only evidence adapters
-are configured; defining a profile alone does not create access.
+Systems Knowledge profiles. Vendor Review allows `research.vendor.collect` and
+Systems Knowledge allows `research.knowledge.collect`. Only configured sources
+are readable; defining a profile alone does not create document access.
 
 ## Checks
 
@@ -88,8 +89,8 @@ conversation/drafts. Observation age is calculated at display time; it does not
 prove that a citation was collected in the current run. Missing legacy reports
 and missing provenance are shown explicitly. Browser and terminal
 approval decisions both use the same authenticated API and approval service.
-Wardstone is still restricted to SHADOW mode, so the approval queue normally
-remains empty in the current milestone.
+SHADOW and REVIEW both deny infrastructure mutations, so the infrastructure
+approval queue remains empty. REVIEW adds message review controls to case detail.
 
 The Setup section reports which runtime features are enabled and which
 credentials are present without returning secret values. Live connection tests
@@ -104,7 +105,92 @@ The corresponding authenticated endpoints are `GET /v1/admin/setup` and
 `POST /v1/admin/setup/connectors/{name}/test`. `/healthz` remains a public
 liveness endpoint and intentionally exposes no connector information.
 
-## Jira connector configuration
+## OpenRouter pilot configuration
+
+Wardstone does not automatically load `.env`; export selected variables before
+starting the process. `WARDSTONE_AI_KEY` is an OpenRouter shortcut. When no
+explicit model endpoint/key is set, it selects `https://openrouter.ai/api/v1`
+and defaults to `openai/gpt-4.1-mini`. Set `WARDSTONE_OPENAI_MODEL` to choose a
+different compatible model. An explicit `WARDSTONE_OPENAI_API_KEY` takes
+precedence. A shortcut key with a conflicting endpoint fails configuration,
+rather than forwarding that key to another provider.
+
+OpenRouter automatically uses strict JSON Schema response variants. For another
+endpoint that supports them, set `WARDSTONE_MODEL_STRUCTURED_OUTPUT=true`.
+Other endpoints keep the existing JSON-object protocol. Both paths retain the
+same runtime validation and bounded token budgets. OpenRouter readiness uses
+the model's endpoints metadata API.
+
+## Reviewed requester messages
+
+Set `WARDSTONE_MODE=REVIEW` and configure the Jira API account's Add comments
+permission. Investigations still create drafts. Open case detail in `/admin/`,
+edit **Exact message to send**, supply operator identity, and choose **Approve
+and send to Jira**. The approved text is immutable and visible alongside the
+original draft, delivery state, and remote comment ID. REVIEW does not enable
+Google mutations or infrastructure-action approvals.
+
+The authenticated API is:
+
+```text
+GET /v1/investigations/{id}/messages
+POST /v1/investigations/{id}/messages/{message_id}/review
+{"body":"exact approved message","actor":"operator@example.com","draft_digest":"SHA-256 from the GET response"}
+```
+
+The GET response includes `draft_digests`, `deliveries`, and `review_enabled`.
+Review requires the original draft's digest, even when its text is edited.
+Identical retries return the same delivery; different reviews conflict. Only
+the latest outbound draft in a waiting or completed case can receive a new
+review. A replied-to question is superseded. SHADOW never accepts sends.
+
+Delivery failures are explicit. A `delivery_outcome_unknown` or ambiguous Jira
+POST result requires checking Jira before any manual resend. There is no
+automatic reconciliation/resend control in this pilot. Rate-limit responses
+receive bounded retries; uncertain remote outcomes do not.
+
+## Vendor sources and systems runbooks
+
+Configure `research.vendors` and `research.knowledge` in the policy YAML. Each
+resource contains one through four titled sources. Vendor sources require
+public HTTPS text documents. Knowledge sources can also use `.md`/`.txt` paths,
+resolved relative to the policy file. The example config includes Tailscale
+public sources; knowledge sources are empty until an operator supplies runbooks.
+
+```yaml
+research:
+  knowledge:
+    VPN troubleshooting:
+      - title: Corporate VPN troubleshooting
+        path: ../runbooks/vpn.md
+```
+
+Use exact Jira fields `Vendor: ["Tailscale"]` or
+`Knowledge topic: ["VPN troubleshooting"]`. Missing fields can be supplied by
+a whole requester reply matching a configured name. Explicit invalid values
+need an operator-corrected new case; replies cannot override them. Public URL
+targets come exclusively from the catalog. Source failures become report gaps.
+
+Examples of supported Jira intake payloads:
+
+```json
+{"external_id":"PILOT-VENDOR-1","summary":"Do a vendor review on Tailscale and give an executive summary plus a risk rating","request_type":"Vendor review","reporter_email":"requester@example.com","fields":{"Vendor":["Tailscale"]}}
+{"external_id":"PILOT-KNOWLEDGE-1","summary":"How do I troubleshoot VPN authentication?","request_type":"Systems question","reporter_email":"requester@example.com","fields":{"Knowledge topic":["VPN troubleshooting"]}}
+```
+
+The example routes these structured request types directly. Prose-only requests
+use the intent fallback and may need a selector clarification. Vendor reports
+include `risk_assessment.rating` (`LOW`, `MODERATE`, `HIGH`, `UNKNOWN`), rationale,
+and citations. Treat the rating as provisional and vendor documents as claims.
+Missing private audit reports and deployment requirements remain unknowns.
+
+Source documents are limited to 512 KiB downloads and 24 KiB text excerpts;
+truncation, timestamps, content hashes, and source URLs are recorded. The current
+collector supports text/HTML/Markdown, not PDF parsing, arbitrary search, or
+authenticated vendor portals. Local runbooks are administrator-selected files,
+not a general document index.
+
+## Jira API account
 
 Create a dedicated Jira Cloud service account with only **Browse projects** for
 the development project. Create an Atlassian API token for
@@ -126,7 +212,8 @@ drafts only. It does not post requester comments or require **Add comments**
 permission. Explicit connector-readiness probes can still read Jira metadata.
 The transactional `message_deliveries` outbox, leased dispatcher, and Jira
 comment sender already exist. SHADOW disables delivery enqueueing and dispatcher
-startup; enabling an operator-reviewed sending workflow remains future work.
+startup. Set WARDSTONE_MODE=REVIEW to enable exact operator-reviewed sending.
+The dedicated Jira account then needs Add comments permission.
 
 ## Bounded access help
 
@@ -146,7 +233,8 @@ name at most 128 bytes with no control characters, and plain group email
 addresses. An omitted or empty map is valid and leaves the access collector
 unregistered. With Google configured and a nonempty map, profiles must allow
 the read collector `google.access.inspect` to receive its observations. The
-example grants this collector to Help Desk and Access Management; proposal
+example grants this collector to Access Management; Help Desk hands confirmed
+access requests to that specialist. Proposal
 permissions and capability policy remain separate.
 
 Send the exact structured field keys in the flattened Jira `fields` map, each

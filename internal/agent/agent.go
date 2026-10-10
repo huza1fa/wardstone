@@ -11,14 +11,25 @@ import (
 const MaxDiagnosisPromptBytes = 256 << 10
 
 type Request struct {
-	InvestigationID domain.InvestigationID
-	Ticket          domain.Ticket
-	Evidence        []domain.Evidence
-	Conversation    []domain.CaseMessage
-	Warnings        []string
-	Handoffs        []HandoffContext
-	Specialist      domain.SpecialistName `json:"specialist"`
-	Instructions    string                `json:"instructions"`
+	InvestigationID    domain.InvestigationID
+	Ticket             domain.Ticket
+	Evidence           []domain.Evidence
+	Conversation       []domain.CaseMessage
+	Warnings           []string
+	Handoffs           []HandoffContext
+	Specialist         domain.SpecialistName   `json:"specialist"`
+	Instructions       string                  `json:"instructions"`
+	PermittedActions   []domain.CapabilityName `json:"permitted_actions"`
+	ActionContracts    []ActionContract        `json:"action_contracts,omitempty"`
+	HandoffTargets     []domain.SpecialistName `json:"handoff_targets"`
+	HandoffOptions     []IntentCandidate       `json:"handoff_options,omitempty"`
+	ResponseConstraint string                  `json:"response_constraint,omitempty"`
+}
+
+type ActionContract struct {
+	Capability       domain.CapabilityName `json:"capability"`
+	ArgumentsVersion int                   `json:"arguments_version"`
+	ArgumentsSchema  json.RawMessage       `json:"arguments_schema"`
 }
 
 // HandoffContext is durable history, not a source of instructions or authority.

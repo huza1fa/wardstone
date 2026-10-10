@@ -4,7 +4,25 @@ access_help:
   resources:
     Engineering tools: engineering-tools@example.com
 
+# Ticket field "Vendor" (or an exact requester reply) selects a configured
+# resource. These public sources are vendor claims, not independent attestations.
+research:
+  vendors:
+    Tailscale:
+      - title: Tailscale security
+        url: https://tailscale.com/security
+      - title: Tailscale shared responsibility
+        url: https://tailscale.com/docs/concepts/shared-responsibility
+      - title: Tailscale data processing addendum
+        url: https://tailscale.com/dpa
+  # Add administrator-owned .md/.txt runbooks relative to this policy file.
+  knowledge: {}
+
 capabilities:
+  research.vendor.collect:
+    mode: allow
+  research.knowledge.collect:
+    mode: allow
   google.access.inspect:
     mode: allow
   google.users.get:
@@ -27,11 +45,14 @@ specialists:
       hand off confirmed identity or entitlement work to access_management,
       vendor risk reviews to vendor_review, and internal systems or
       documentation questions to systems_knowledge.
+      Once a requester identifies a runbook or asks for documented
+      troubleshooting instructions, hand off to systems_knowledge immediately.
+      Do not keep asking for application identifiers when the requester has
+      supplied a named runbook; the knowledge specialist resolves its selector.
       For access inspections, ask only for the exact configured resource name
       when clarification_requirements are present. Escalate immutable selector
       errors to an operator rather than repeatedly questioning the requester.
     collectors:
-      - google.access.inspect
       - google.users.get
       - google.users.list_groups
     handoff_to:
@@ -61,12 +82,24 @@ specialists:
       Prepare bounded, evidence-backed vendor security and risk reviews.
       Do not infer contractual or legal approval, and ask for a specific
       missing vendor artifact when the requester can provide it.
+      Collect configured vendor documents using the Vendor selector. Return an
+      executive summary, cited findings, deployment assumptions, unknowns, and
+      a provisional LOW/MODERATE/HIGH/UNKNOWN risk rating with rationale.
+      Attribute vendor claims and escalate unavailable evidence rather than
+      treating model training knowledge as research.
+    collectors:
+      - research.vendor.collect
     handoff_to:
       - help_desk
   - name: systems_knowledge
     instructions: >-
       Answer systems and internal-documentation questions from configured
       read-only evidence, and identify when an operator must supply context.
+      Use the Knowledge topic selector or exact requester reply for configured
+      runbooks. Cite the documents and separate recommended steps from work
+      performed. Missing configured sources require operator escalation.
+    collectors:
+      - research.knowledge.collect
     handoff_to:
       - help_desk
 
@@ -95,6 +128,18 @@ routing:
         labels: [vendor]
         fields:
           Review type: [Security]
+    - name: jira-vendor-request
+      specialist: vendor_review
+      classification: vendor_review
+      match:
+        sources: [jira]
+        request_types: [Vendor review]
+    - name: jira-systems-request
+      specialist: systems_knowledge
+      classification: systems_knowledge
+      match:
+        sources: [jira]
+        request_types: [Systems question]
     - name: jira-systems-question
       specialist: systems_knowledge
       classification: systems_knowledge

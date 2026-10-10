@@ -461,3 +461,23 @@ func TestGoogleProbeChecksGroupPermissionsAndEmptyResults(t *testing.T) {
 		})
 	}
 }
+
+func TestUnconfiguredGoogleAccessSuppliesSelectorsAndEscalates(t *testing.T) {
+	collector, err := NewUnconfiguredAccessCollector(map[string]string{"Engineering tools": "engineering-tools@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fields := range []map[string][]string{nil, {"Access resource": {"Engineering tools"}}} {
+		evidence, err := collector.Collect(context.Background(), domain.Ticket{ReporterEmail: "requester@example.test", Metadata: domain.TicketMetadata{Fields: fields}})
+		if err != nil || len(evidence) != 1 {
+			t.Fatalf("offline access=%+v err=%v", evidence, err)
+		}
+		var observation AccessEvidenceV1
+		if err := json.Unmarshal(evidence[0].Data, &observation); err != nil {
+			t.Fatal(err)
+		}
+		if observation.Status != "operator_intervention_required" || len(observation.Clarifications) != 0 || len(observation.Escalations) == 0 || observation.DirectMembership != "unknown" || observation.User != nil || observation.Group != nil {
+			t.Fatalf("offline access asked for credentials or invented membership: %+v", observation)
+		}
+	}
+}

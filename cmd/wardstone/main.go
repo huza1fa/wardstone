@@ -23,6 +23,7 @@ import (
 	"github.com/wardstone-project/wardstone/internal/connectors"
 	"github.com/wardstone-project/wardstone/internal/connectors/google"
 	"github.com/wardstone-project/wardstone/internal/connectors/jira"
+	"github.com/wardstone-project/wardstone/internal/connectors/research"
 	"github.com/wardstone-project/wardstone/internal/database"
 	"github.com/wardstone-project/wardstone/internal/delivery"
 	"github.com/wardstone-project/wardstone/internal/domain"
@@ -61,6 +62,9 @@ func run(logger *slog.Logger) error {
 	if err := registry.Register(google.Capabilities()...); err != nil {
 		return err
 	}
+	if err := registry.Register(research.Capabilities()...); err != nil {
+		return err
+	}
 	policyEvaluator := policy.New(settings.Mode, registry, settings.PolicyRules)
 
 	httpClient := &http.Client{Transport: &http.Transport{
@@ -70,23 +74,42 @@ func run(logger *slog.Logger) error {
 	}}
 	var googleClient *google.HTTPClient
 	collectors := make([]connectors.EvidenceCollector, 0, 3)
+	for _, item := range []struct {
+		capability domain.CapabilityName
+		catalog    research.Catalog
+	}{{research.VendorCollect, settings.VendorSources}, {research.KnowledgeCollect, settings.KnowledgeSources}} {
+		capability, catalog := item.capability, item.catalog
+		if len(catalog) == 0 {
+			continue
+		}
+		collector, err := research.NewCollector(capability, catalog, research.PublicClient())
+		if err != nil {
+			return err
+		}
+		collectors = append(collectors, collector)
+	}
 	if settings.GoogleConfigured() {
 		googleClient, err = google.NewHTTPClient(settings.GoogleBaseURL, settings.GoogleAccessToken, httpClient)
 		if err != nil {
 			return err
 		}
 		collectors = append(collectors, google.UserCollector{Client: googleClient}, google.GroupCollector{Client: googleClient})
-		if resources := settings.AccessHelp.Resources(); len(resources) > 0 {
-			accessCollector, err := google.NewAccessCollector(googleClient, resources)
-			if err != nil {
-				return err
-			}
-			collectors = append(collectors, accessCollector)
+	}
+	if resources := settings.AccessHelp.Resources(); len(resources) > 0 {
+		var accessCollector *google.AccessCollector
+		if googleClient == nil {
+			accessCollector, err = google.NewUnconfiguredAccessCollector(resources)
+		} else {
+			accessCollector, err = google.NewAccessCollector(googleClient, resources)
 		}
+		if err != nil {
+			return err
+		}
+		collectors = append(collectors, accessCollector)
 	}
 	var model *models.OpenAICompatible
 	if settings.ModelConfigured() {
-		model, err = models.NewOpenAICompatible(settings.OpenAIBaseURL, settings.OpenAIAPIKey, settings.OpenAIModel, httpClient)
+		model, err = models.NewOpenAICompatible(settings.OpenAIBaseURL, settings.OpenAIAPIKey, settings.OpenAIModel, httpClient, models.Options{StructuredOutput: settings.ModelStructuredOutput})
 		if err != nil {
 			return err
 		}
@@ -113,7 +136,7 @@ func run(logger *slog.Logger) error {
 		PromptVersion:            "shadow-v2",
 		MaxHandoffs:              settings.MaxHandoffs,
 		MaxFollowUpQuestions:     settings.MaxFollowUpQuestions,
-		DeliverRequesterMessages: settings.Mode != domain.OperatingModeShadow,
+		DeliverRequesterMessages: false, // REVIEW requires an exact operator review.
 		Specialists:              specialistRegistry,
 		RoutingRules:             settings.RoutingRules,
 		IntentClassification:     &settings.IntentClassification,
@@ -129,9 +152,9 @@ func run(logger *slog.Logger) error {
 		}
 	}
 	var deliveryDispatcher *delivery.Dispatcher
-	if jiraClient != nil && settings.Mode != domain.OperatingModeShadow {
+	if jiraClient != nil && settings.Mode == domain.OperatingModeReview {
 		deliveryDispatcher, err = delivery.NewDispatcher(store, jiraClient, logger, delivery.Config{
-			Lease: settings.JobLease, PollInterval: 500 * time.Millisecond, MaxAttempts: 5,
+			Lease: settings.JobLease, PollInterval: 500 * time.Millisecond, MaxAttempts: 5, ReviewedOnly: true,
 		})
 		if err != nil {
 			return err
@@ -144,11 +167,12 @@ func run(logger *slog.Logger) error {
 	setupService, err := readiness.New(setupChecks(settings, pool, jiraClient, googleClient, model), admin.RuntimeFeatures{
 		JiraIntake: settings.JiraInboundConfigured() && model != nil, Investigations: model != nil,
 		GoogleEvidence: googleClient != nil && model != nil, JiraDelivery: deliveryDispatcher != nil,
+		VendorEvidence: len(settings.VendorSources) > 0 && model != nil, KnowledgeEvidence: len(settings.KnowledgeSources) > 0 && model != nil,
 	}, 5*time.Second, logger)
 	if err != nil {
 		return err
 	}
-	options := []api.Option{api.WithAdmin(store, approvalService, settings.Mode), api.WithSetup(setupService), api.WithRoutingPreview(service)}
+	options := []api.Option{api.WithAdmin(store, approvalService, settings.Mode), api.WithSetup(setupService), api.WithRoutingPreview(service), api.WithMessageReviews(store, deliveryDispatcher != nil)}
 	var intake api.InvestigationService
 	if model != nil {
 		intake = service

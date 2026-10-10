@@ -277,9 +277,7 @@ func (s *Store) RecordEvidence(ctx context.Context, id domain.InvestigationID, i
 			if err != nil {
 				return fmt.Errorf("insert evidence: %w", err)
 			}
-			if err := appendEvent(ctx, tx, id, audit.EvidenceCollected, audit.ActorConnector, string(item.Source), at, map[string]any{
-				"evidence_id": item.ID, "capability": item.Capability, "kind": item.Kind, "observed_at": item.ObservedAt,
-			}); err != nil {
+			if err := appendEvent(ctx, tx, id, audit.EvidenceCollected, audit.ActorConnector, string(item.Source), at, audit.EvidenceData(item)); err != nil {
 				return err
 			}
 		}

@@ -128,3 +128,25 @@ func TestProbeDoesNotFollowRedirect(t *testing.T) {
 		t.Fatalf("probe error = %v", err)
 	}
 }
+
+func TestJiraDoesNotRetryAmbiguousCommentOutcomes(t *testing.T) {
+	for name, handler := range map[string]http.HandlerFunc{
+		"server error":     func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) },
+		"invalid response": func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("not json")) },
+		"missing ID":       func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(`{}`)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(handler)
+			defer server.Close()
+			client, err := NewClient(server.URL, "bot@example.test", "token", server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.SendRequesterMessage(context.Background(), domain.Ticket{Source: Name, ExternalID: "TEST-1"}, domain.CaseMessage{Direction: domain.MessageOutbound, Body: "Approved text"})
+			var retryable interface{ Retryable() bool }
+			if !errors.As(err, &retryable) || retryable.Retryable() {
+				t.Fatalf("ambiguous write could be repeated: %v", err)
+			}
+		})
+	}
+}

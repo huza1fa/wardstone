@@ -25,14 +25,15 @@ const (
 )
 
 func Capabilities() []capabilities.Definition {
+	memberSchema := json.RawMessage(`{"type":"object","properties":{"group":{"type":"string"},"user":{"type":"string"}},"required":["group","user"],"additionalProperties":false}`)
 	return []capabilities.Definition{
 		{Name: AccessInspect, Connector: Name, Description: "Inspect administrator-configured access request user, group, and direct membership; selectors come only from ticket fields and authenticated requester context", Effect: domain.EffectRead, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validateAccessInspect},
 		{Name: UsersGet, Connector: Name, Description: "Get a Google Workspace user", Effect: domain.EffectRead, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validateUser},
 		{Name: UsersListGroups, Connector: Name, Description: "List groups for a Google Workspace user", Effect: domain.EffectRead, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validateUser},
 		{Name: GroupsGet, Connector: Name, Description: "Get a Google Workspace group", Effect: domain.EffectRead, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validateGroup},
 		{Name: GroupsListMembers, Connector: Name, Description: "List members of a Google Workspace group", Effect: domain.EffectRead, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validateGroup},
-		{Name: GroupsAddMember, Connector: Name, Description: "Add a member to a Google Workspace group", Effect: domain.EffectMutate, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validateGroupMember},
-		{Name: GroupsRemoveMember, Connector: Name, Description: "Remove a member from a Google Workspace group", Effect: domain.EffectMutate, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validateGroupMember},
+		{Name: GroupsAddMember, Connector: Name, Description: "Add a member to a Google Workspace group", Effect: domain.EffectMutate, ArgumentsVersion: 1, ArgumentsSchema: memberSchema, Idempotent: true, ValidateArguments: validateGroupMember},
+		{Name: GroupsRemoveMember, Connector: Name, Description: "Remove a member from a Google Workspace group", Effect: domain.EffectMutate, ArgumentsVersion: 1, ArgumentsSchema: memberSchema, Idempotent: true, ValidateArguments: validateGroupMember},
 	}
 }
 

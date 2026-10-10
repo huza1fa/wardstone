@@ -242,6 +242,23 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 	if err != nil {
 		return fmt.Errorf("load conversation: %w", err)
 	}
+	// The immutable ledger retains model drafts; reasoning uses the text an
+	// operator actually approved, including edits, on subsequent runs.
+	if reader, ok := s.store.(interface {
+		ListDeliveries(context.Context, domain.InvestigationID) ([]domain.MessageDelivery, error)
+	}); ok {
+		deliveries, err := reader.ListDeliveries(ctx, id)
+		if err != nil {
+			return fmt.Errorf("load reviewed conversation: %w", err)
+		}
+		for i := range messages {
+			for _, d := range deliveries {
+				if d.MessageID == messages[i].ID && d.ReviewedBody != "" {
+					messages[i].Body = d.ReviewedBody
+				}
+			}
+		}
+	}
 	if err := s.store.StartInvestigation(ctx, id, s.clock.Now()); err != nil {
 		return fmt.Errorf("start investigation: %w", err)
 	}
@@ -356,9 +373,25 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 	if err != nil {
 		return fmt.Errorf("reload case evidence: %w", err)
 	}
+	handoffOptions := make([]agent.IntentCandidate, 0, len(profile.HandoffTargets))
+	for _, name := range profile.HandoffTargets {
+		target, _ := s.specialists.Get(name)
+		handoffOptions = append(handoffOptions, agent.IntentCandidate{Specialist: name, Classification: string(name), Description: boundedString(target.Instructions, 2000)})
+	}
+	actionContracts := make([]agent.ActionContract, 0, len(profile.AllowedCapabilities))
+	for _, name := range profile.AllowedCapabilities {
+		definition, _ := s.registry.Get(name)
+		if len(definition.ArgumentsSchema) > 0 {
+			actionContracts = append(actionContracts, agent.ActionContract{Capability: name, ArgumentsVersion: definition.ArgumentsVersion, ArgumentsSchema: definition.ArgumentsSchema})
+		}
+	}
 	request, freshEvidence, err := s.boundedCaseRequest(agent.Request{
 		InvestigationID: id, Ticket: ticket, Conversation: messages, Warnings: warnings, Handoffs: handoffs,
 		Specialist: profile.Name, Instructions: profile.Instructions,
+		PermittedActions: append([]domain.CapabilityName{}, profile.AllowedCapabilities...), HandoffTargets: append([]domain.SpecialistName{}, profile.HandoffTargets...),
+		ResponseConstraint: agent.ConstraintForEvidence(evidence),
+		HandoffOptions:     handoffOptions,
+		ActionContracts:    actionContracts,
 	}, evidence, prior, profile, s.clock.Now())
 	if err != nil {
 		return err
@@ -371,6 +404,9 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 	cancel()
 	if err != nil {
 		return fmt.Errorf("generate diagnosis: %w", err)
+	}
+	if agent.ConstraintForEvidence(evidence) == "final_report" && (result.FollowUpQuestion != "" || result.Handoff != nil) {
+		return errors.New("operator-intervention evidence requires a final escalation report, not a requester question or handoff")
 	}
 	if len(result.FollowUpQuestion) > maxFollowUpQuestionSize {
 		return fmt.Errorf("model follow-up question exceeds %d bytes", maxFollowUpQuestionSize)

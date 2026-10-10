@@ -204,9 +204,7 @@ func (s *Store) RecordEvidence(_ context.Context, id domain.InvestigationID, ite
 		copy.InvestigationID = id
 		copy.Data = append(json.RawMessage(nil), item.Data...)
 		s.evidence[id] = append(s.evidence[id], copy)
-		s.appendEvent(id, audit.EvidenceCollected, audit.ActorConnector, string(item.Source), at, map[string]any{
-			"evidence_id": item.ID, "capability": item.Capability, "kind": item.Kind, "observed_at": item.ObservedAt,
-		})
+		s.appendEvent(id, audit.EvidenceCollected, audit.ActorConnector, string(item.Source), at, audit.EvidenceData(item))
 	}
 	for _, failure := range failures {
 		s.appendEvent(id, audit.EvidenceCollectionFailed, audit.ActorConnector, string(failure.Source), at, map[string]any{

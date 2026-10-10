@@ -40,6 +40,9 @@ func (e *Evaluator) Evaluate(_ context.Context, action domain.ProposedAction) do
 	if definition.Effect == domain.EffectMutate && e.mode == domain.OperatingModeShadow {
 		return domain.PolicyResult{Decision: domain.PolicyDeny, Reason: "shadow_mode"}
 	}
+	if definition.Effect == domain.EffectMutate && e.mode == domain.OperatingModeReview {
+		return domain.PolicyResult{Decision: domain.PolicyDeny, Reason: "review_mode"}
+	}
 	rule, exists := e.rules[action.Capability]
 	if !exists {
 		return domain.PolicyResult{Decision: domain.PolicyDeny, Reason: "no_matching_rule"}

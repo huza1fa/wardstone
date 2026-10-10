@@ -13,6 +13,7 @@ import (
 	"github.com/wardstone-project/wardstone/internal/admin"
 	"github.com/wardstone-project/wardstone/internal/audit"
 	"github.com/wardstone-project/wardstone/internal/connectors/jira"
+	"github.com/wardstone-project/wardstone/internal/delivery"
 	"github.com/wardstone-project/wardstone/internal/domain"
 	"github.com/wardstone-project/wardstone/internal/investigations"
 )
@@ -52,6 +53,8 @@ type Server struct {
 	conversations  ConversationService
 	routingPreview RoutingPreviewer
 	setup          SetupService
+	reviews        MessageReviewService
+	reviewEnabled  bool
 	mode           domain.OperatingMode
 	webhookSecret  string
 	operatorToken  string
@@ -128,6 +131,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/tickets/jira/replies", s.receiveJiraReply)
 	mux.HandleFunc("GET /v1/investigations/{id}", s.getInvestigation)
 	mux.HandleFunc("GET /v1/investigations/{id}/messages", s.getMessages)
+	mux.HandleFunc("POST /v1/investigations/{id}/messages/{messageID}/review", s.reviewMessage)
 	mux.HandleFunc("GET /v1/investigations/{id}/timeline", s.getTimeline)
 	mux.HandleFunc("GET /v1/admin/overview", s.getAdminOverview)
 	mux.HandleFunc("GET /v1/admin/investigations", s.listAdminInvestigations)
@@ -292,7 +296,23 @@ func (s *Server) getMessages(writer http.ResponseWriter, request *http.Request) 
 		writeError(writer, http.StatusInternalServerError, "could not load conversation")
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"messages": messages})
+	payload := map[string]any{"messages": messages, "review_enabled": s.reviewEnabled && s.mode == domain.OperatingModeReview}
+	digests := make(map[domain.MessageID]string)
+	for _, message := range messages {
+		if message.Direction == domain.MessageOutbound {
+			digests[message.ID] = delivery.DraftDigest(message.Body)
+		}
+	}
+	payload["draft_digests"] = digests
+	if s.reviews != nil {
+		deliveries, err := s.reviews.ListDeliveries(request.Context(), domain.InvestigationID(request.PathValue("id")))
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, "could not load message deliveries")
+			return
+		}
+		payload["deliveries"] = deliveries
+	}
+	writeJSON(writer, http.StatusOK, payload)
 }
 
 func (s *Server) authorized(request *http.Request) bool {

@@ -75,3 +75,12 @@ func testRegistry(t *testing.T) *capabilities.Registry {
 	}
 	return registry
 }
+
+func TestReviewModeDeniesInfrastructureMutations(t *testing.T) {
+	for _, rule := range []RuleMode{RuleAllow, RuleApproval, RuleDeny} {
+		result := New(domain.OperatingModeReview, testRegistry(t), map[domain.CapabilityName]RuleMode{"test.write": rule}).Evaluate(context.Background(), sealedAction(t, "test.write"))
+		if result.Decision != domain.PolicyDeny || result.Reason != "review_mode" {
+			t.Fatalf("REVIEW rule=%s result=%+v", rule, result)
+		}
+	}
+}

@@ -230,7 +230,7 @@ test("requester questions, replies and final drafts preserve literal conversatio
   assert.ok(textOf(messages[1]).includes("Requester reply"));
   assert.ok(textOf(messages[1]).includes(`requester-${hostile}`));
   assert.ok(textOf(messages[2]).includes(`Final result\n${hostile}`));
-  assert.ok(textOf(get("dialog-body")).includes("does not confirm delivery"));
+  assert.ok(textOf(get("dialog-body")).includes("Delivery status is recorded separately"));
   assert.ok(!nodes.some((item) => item.tagName === "a"));
 });
 
@@ -360,4 +360,72 @@ test("setup serializes browser-initiated connector probes", async () => {
   assert.equal(requests.filter((item) => item.url.includes("/test")).length, 1);
   resolveProbe({ body: { component: initial.components[0], setup: initial } });
   await settle();
+});
+
+test("operator review submits the edited literal text and original draft digest", async () => {
+  const hostile = '<img src=x onerror="alert(1)">';
+  const id = "review-case";
+  const draft = "Original question";
+  const messages = { messages: [{ id: "draft-1", direction: "OUTBOUND", source: "jira", body: draft }], review_enabled: true, draft_digests: { "draft-1": "original-digest" }, deliveries: [] };
+  const { get, requests } = harness({
+    [`/v1/investigations/${id}`]: { body: { status: "WAITING_ON_REQUESTER" } },
+    [`/v1/investigations/${id}/messages`]: { body: messages },
+    [`/v1/investigations/${id}/messages/draft-1/review`]: { status: 202, body: { created: true } },
+  });
+  openInvestigation(get, id);
+  await settle();
+  const form = descendants(get("dialog-body")).find((item) => item.className === "message-review");
+  assert.ok(form);
+  const fields = descendants(form);
+  fields.find((item) => item.tagName === "textarea").value = `Edited question ${hostile}`;
+  fields.find((item) => item.tagName === "input").value = " operator@example.test ";
+  await submit(form);
+  const request = requests.find((item) => item.url.endsWith("/review"));
+  assert.deepEqual(JSON.parse(request.options.body), { body: `Edited question ${hostile}`, actor: "operator@example.test", draft_digest: "original-digest" });
+  assert.equal(request.options.method, "POST");
+  assert.ok(!descendants(get("dialog-body")).some((item) => item.tagName === "img"));
+});
+
+test("review conflict retains the draft and shows the server explanation", async () => {
+  const { get } = harness({
+    "/v1/investigations/conflict": { body: { status: "COMPLETED" } },
+    "/v1/investigations/conflict/messages": { body: { messages: [{ id: "draft", direction: "OUTBOUND", body: "Result" }], review_enabled: true, draft_digests: { draft: "digest" } } },
+    "/v1/investigations/conflict/messages/draft/review": { status: 409, body: { error: "Draft was superseded" } },
+  });
+  openInvestigation(get, "conflict");
+  await settle();
+  const form = descendants(get("dialog-body")).find((item) => item.className === "message-review");
+  await submit(form);
+  assert.ok(textOf(form).includes("Draft was superseded"));
+  assert.equal(descendants(form).find((item) => item.tagName === "textarea").value, "Result");
+  assert.equal(descendants(form).find((item) => item.tagName === "button").disabled, false);
+});
+
+test("review controls exclude shadow, superseded, and inbound messages", async () => {
+  for (const [status, enabled, messages] of [
+    ["COMPLETED", false, [{ id: "draft", direction: "OUTBOUND", body: "Shadow result" }]],
+    ["PENDING", true, [{ id: "draft", direction: "OUTBOUND", body: "Obsolete question" }]],
+    ["WAITING_ON_REQUESTER", true, [{ id: "draft", direction: "OUTBOUND", body: "Old question" }, { id: "reply", direction: "INBOUND", body: "Answer" }]],
+  ]) {
+    const { get } = harness({
+      "/v1/investigations/guard": { body: { status } },
+      "/v1/investigations/guard/messages": { body: { messages, review_enabled: enabled } },
+    });
+    openInvestigation(get, "guard");
+    await settle();
+    assert.ok(!descendants(get("dialog-body")).some((item) => item.className === "message-review"));
+  }
+});
+
+test("reviewed delivery and provisional risk remain literal and cite their evidence", async () => {
+  const hostile = '<script>alert(1)</script>';
+  const { get } = harness({
+    "/v1/investigations/delivered": { body: { status: "COMPLETED", work_package: { version: 1, summary: "Executive summary", findings: [], unknowns: [], risk_assessment: { rating: "MODERATE", rationale: hostile, evidence_ids: ["vendor-doc"] } } } },
+    "/v1/investigations/delivered/messages": { body: { messages: [{ id: "draft", direction: "OUTBOUND", body: "Original" }], review_enabled: true, deliveries: [{ message_id: "draft", status: "SENT", reviewed_by: "operator", reviewed_body: hostile, remote_id: "comment-1" }] } },
+  });
+  openInvestigation(get, "delivered");
+  await settle();
+  const text = textOf(get("dialog-body"));
+  for (const value of ["Provisional vendor risk", "MODERATE", "vendor-doc", "SENT", "operator", "comment-1", hostile]) assert.ok(text.includes(value));
+  assert.ok(!descendants(get("dialog-body")).some((item) => item.tagName === "script" || item.className === "message-review"));
 });

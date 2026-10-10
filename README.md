@@ -1,143 +1,116 @@
 # Wardstone
 
-Wardstone is a self-hosted virtual IT team for solo administrators and small
-teams. It takes the interrupt-driven L1/L2 work that fragments an operator's
-day, gathers the missing context, and returns a decision-ready result instead
-of another chat thread to manage.
+A self-hosted virtual IT team for solo administrators and small teams. Wardstone
+turns Jira requests into evidence-backed investigations, focused follow-up
+questions, and reviewable results. You keep control of the infrastructure,
+credentials, policy, and model-provider account.
 
-Its canonical [operating model](docs/operating-model.md) is a lightweight
-dispatcher coordinating least-privilege operational specialists. Models may
-investigate and propose; deterministic policy and explicit authority controls
-all meaningful state changes.
+![Wardstone investigation list with help desk, access, vendor, and systems cases](docs/screenshots/investigations.png)
 
-Wardstone is not a chatbot, ITSM, MDM, or hosted service. Administrators retain
-their infrastructure, credentials, policy, and model-provider accounts.
+Screenshots show the running console with simulated Jira cases, read-only Google
+fixtures, a fictional VPN runbook, and live OpenRouter responses. Vendor research
+uses configured public Tailscale documents. No real Jira or Workspace tenant is
+shown.
 
-## Project intent
+## From ticket to reviewed result
 
-The goal is to reduce context switching without giving an AI model unchecked
-access to infrastructure. Specialized investigation roles may research,
-triage, clarify vague requests, and propose work; deterministic code owns
-policy, approval, execution, and auditing.
+1. **Receive and route.** Authenticated Jira intake creates a durable case.
+   Structured fields select a specialist first; a bounded intent classifier
+   handles requests that do not match a routing rule.
+2. **Investigate.** Help Desk, Access Management, Vendor Review, and Systems
+   Knowledge each receive only their permitted collectors and capabilities.
+3. **Clarify or hand off.** A specialist can draft a focused question, wait for
+   an authenticated requester reply, and resume the same case. A handoff retains
+   its conversation, evidence, and original routing decision.
+4. **Return a work package.** The report separates findings, assumptions,
+   unknowns, escalation reasons, expected impact, and a requester summary.
+5. **Review and send.** An operator approves the exact Jira comment. Delivery
+   status and the remote comment ID are recorded alongside the original draft.
 
-Wardstone is intended to:
+PostgreSQL stores cases, messages, reports, worker leases, and the audit trail,
+so a service restart does not erase the conversation.
 
-- ingest work from existing ticketing systems;
-- ask a requester one focused follow-up question, wait durably, and resume
-  from their answer without an operator having to reconstruct the case;
-- collect relevant evidence from configured services;
-- support a growing set of safe, reviewable work types: access help, incident
-  triage, vendor-risk research, and systems/documentation questions;
-- produce evidence-backed diagnoses and proposed actions;
-- enforce administrator-defined policy and approval requirements;
-- execute only explicitly authorized capabilities; and
-- preserve a durable audit trail of every decision and action.
+## Vendor research with visible evidence
 
-## Current scope
+A request such as “Do a vendor review on Tailscale and give an executive summary
+plus a risk rating” produces a structured report with a provisional rating,
+rationale, and cited sources. Each citation shows the source URL, observation
+time, content hash, and whether the excerpt was truncated.
 
-The current milestone is deliberately limited to **SHADOW** mode. A Jira ticket
-can be ingested, Google Workspace context can be gathered, the model can ask a
-focused question when the request is incomplete, and a later Jira reply resumes
-the same durable investigation. When enough context exists, Wardstone produces
-a structured work package separating verified findings, assumptions, unknowns,
-escalation reasons, expected impact, and a requester-summary draft. Policy
-evaluates each proposed action. SHADOW performs no requester sends or connector
-writes.
+Sources come from an administrator-owned catalog. Vendor documents remain
+vendor claims; the rating is an assessment for operator review. Missing audit
+reports and deployment requirements appear as gaps in the report.
 
-The admin console now exposes an onboarding and connector-readiness foundation:
-Wardstone can start with Jira, Google, and the model unconfigured, explains the
-resulting feature availability, and runs explicit read-only connection tests.
-Credentials remain environment-managed and are never entered into or returned
-by the browser. Bounded access help now inspects an administrator-mapped Google
-group and direct user membership, using structured ticket fields or an exact
-resource-name reply. Durable case memory carries permitted observations across
-resumes and handoffs, with citation and freshness validation. The next product
-work is a pilot of operator-reviewed sending and an explicitly approved action
-with verification. Slack remains an important requester/approval surface, but
-it is not a prerequisite for the core case lifecycle.
+![Tailscale executive summary, provisional MODERATE risk, and public-document citations](docs/screenshots/vendor-review.png)
 
-## Jira development setup
+## Conversations that carry context forward
 
-Wardstone's Jira connector uses a dedicated Jira account with permission to
-browse the target project. Configure its base URL, account
-email, API token, and a separate inbound webhook secret. The application rejects
-non-HTTPS Jira URLs except loopback addresses used for local development.
+A vague “Something is broken” request can become a specific troubleshooting
+case. The console preserves the generated question, the operator's approved
+wording, delivery confirmation, and the requester's answer. A Systems Knowledge
+specialist can then use a configured runbook to return cited recommended steps.
 
-In SHADOW mode, questions and final investigation summaries are durable drafts
-visible to operators; Wardstone never posts model-generated content to Jira.
-The transactional delivery outbox, leased dispatcher, and Jira comment adapter
-are implemented; SHADOW does not enqueue deliveries or start the dispatcher.
-Operator-reviewed sending is the next workflow to pilot.
+![Reviewed help desk clarification, confirmed delivery, and the requester’s VPN error reply](docs/screenshots/requester-conversation.png)
 
-See [development setup](docs/development.md) for the environment variables and
-Jira Automation payload shape.
+## Approve the message the requester will receive
 
-See [the architecture](docs/architecture.md) for design details and
-[development setup](docs/development.md) for local commands.
+In **SHADOW**, questions and results stay as operator-visible drafts. In
+**REVIEW**, edit the message, supply operator identity, and choose **Approve and
+send to Jira**. The exact approved text enters the durable delivery outbox;
+review identity and delivery outcomes remain visible in the case.
 
-## Product direction and MVP order
+![Original investigation draft beside the edited message and Approve and send to Jira control](docs/screenshots/message-review.png)
 
-Wardstone is being built around a simple operator promise: bring the operator
-in only when their judgment or authority is actually needed. A successful MVP
-will demonstrate this across three kinds of work: a vague helpdesk request that
-is clarified and resolved, a bounded access-management request, and a vendor
-review that returns a cited risk profile.
+## Proposals with explicit policy decisions
 
-The priority order is:
+Access Management can inspect an administrator-mapped Google group and direct
+membership, then propose a narrowly scoped change. The console shows its exact
+arguments, evidence citations, action digest, and deterministic policy decision.
+Both SHADOW and REVIEW deny infrastructure mutations. Approving a requester
+message does not approve the proposed infrastructure change.
 
-1. Durable case context and requester conversations — **implemented**, including
-   bounded, provenance-filtered evidence memory across resumes and handoffs.
-2. An admin onboarding flow that scopes environment-managed credentials, tests
-   read access, and explains resulting permissions — **readiness foundation
-   implemented; managed credential provisioning remains future work**.
-3. Bounded access-help investigation and structured work packages —
-   **implemented in this slice**; vendor-risk and systems-knowledge evidence
-   adapters remain future work.
-4. Pilot operator-reviewed requester sending and an approved action with
-   postcondition verification. The Jira transactional delivery foundation and
-   approval state machine exist; enabling the workflow, Slack delivery, and
-   broader data-classification/model-routing controls remain future work.
+![Google group membership proposal with exact arguments, evidence, and DENY review_mode policy result](docs/screenshots/access-policy.png)
 
-Ticket routing is deterministic-first: ordered rules use selected Jira fields
-before Wardstone asks a model for a confidence-gated intent classification.
-The model can choose only an installed specialist profile and does not receive
-any permission to act. Each case stores its original rule/model/fallback
-decision and matching audit event; later clarification or specialist handoffs
-retain that history. Operators can test Jira mappings in the console's routing
-preview without creating work or calling a model. See the example policy and
-[development setup](docs/development.md#jira-ticket-routing-metadata).
+## Operate from the web or terminal
 
-We will not spend the MVP on a generic chat interface, unbounded autonomous
-execution, or a large catalog of shallow one-off automations. The useful unit
-is a durable case with clear context, a narrow job to do, evidence, and an
-explicit handoff boundary.
+The web console at `/admin/` exposes investigations, reports, conversations,
+connector readiness, routing previews, and audit timelines. A terminal console
+uses the same authenticated admin API. Credentials stay in the server
+environment; connector tests are explicit, bounded, and read only.
 
-## Operator interfaces
+<details>
+<summary>View connector setup and the mobile console</summary>
 
-Wardstone exposes two operator views backed by the same authenticated admin
-API:
+![System overview in REVIEW mode with connector readiness and available features](docs/screenshots/overview.png)
 
-- a responsive web console at `/admin/` for service status, investigation
-  history, connector setup/readiness, investigation reports with literal evidence
-  citations and observation metadata, exact action arguments and policy,
-  requester drafts/conversations, audit timelines, and approval requests;
-  and
-- a Charm-based terminal console with overview, investigation, and approval
-  views.
+<img src="docs/screenshots/mobile-overview.png" alt="Wardstone responsive mobile console showing mode and investigation metrics" width="390">
 
-Both interfaces require `WARDSTONE_OPERATOR_TOKEN`. Approval decisions are
-recorded through the approval service and immutable audit timeline; neither UI
-updates database state directly. The current runtime remains restricted to
-**SHADOW** mode, so approval queues are normally empty until approval mode and
-request dispatch are enabled.
+</details>
 
-## Status
+## Run locally
 
-Wardstone has a SHADOW access-help/case-memory slice with operator-reviewable
-reports. The runtime requires database migrations **1 through 8**. Next is a
-small pilot of reviewed requester sending and approved, verified action
-execution. Interfaces and schemas are expected to evolve before the first
-tagged release.
+Use Go 1.25 or later and Docker Compose. Copy `.env.example` to an ignored local
+`.env`, configure the database password, operator token, and policy path, then
+export the runtime variables using your preferred environment tool. Wardstone
+does not automatically load `.env`.
+
+```sh
+docker compose up -d postgres
+go run ./cmd/wardstone
+```
+
+Open `http://127.0.0.1:8080/admin/` and connect with the configured operator token.
+The runtime requires migrations 1–9; Compose applies them when creating a fresh
+database volume. Set `WARDSTONE_AI_KEY` for the OpenRouter shortcut, or configure
+an explicit compatible model endpoint. Jira and Google connectors can be added
+independently.
+
+See [development setup](docs/development.md) for environment configuration,
+existing-volume migrations, Jira Automation payloads, source catalogs, and test
+commands. See the [operating model](docs/operating-model.md) and
+[architecture](docs/architecture.md) for authority boundaries and storage design.
+The [pilot plan](docs/pilot-plan.md) and [verification results](docs/pilot-results.md)
+cover test scope, limitations, and follow-on work.
 
 ## License
 

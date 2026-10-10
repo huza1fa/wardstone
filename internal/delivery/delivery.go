@@ -44,6 +44,11 @@ type Config struct {
 	Lease        time.Duration
 	PollInterval time.Duration
 	MaxAttempts  int
+	ReviewedOnly bool
+}
+
+type reviewedClaimer interface {
+	ClaimReviewedDelivery(context.Context, string, time.Duration) (Job, error)
 }
 
 type Dispatcher struct {
@@ -60,6 +65,11 @@ func NewDispatcher(store Store, sender Sender, logger *slog.Logger, config Confi
 	}
 	if config.Lease <= 0 || config.PollInterval <= 0 || config.MaxAttempts < 1 {
 		return nil, errors.New("delivery lease, poll interval, and max attempts must be positive")
+	}
+	if config.ReviewedOnly {
+		if _, ok := store.(reviewedClaimer); !ok {
+			return nil, errors.New("reviewed delivery store is required")
+		}
 	}
 	return &Dispatcher{store: store, sender: sender, logger: logger, config: config, owner: string(domain.NewDeliveryID())}, nil
 }
@@ -88,7 +98,13 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 }
 
 func (d *Dispatcher) runOne(ctx context.Context) error {
-	job, err := d.store.ClaimDelivery(ctx, d.owner, d.config.Lease)
+	var job Job
+	var err error
+	if d.config.ReviewedOnly {
+		job, err = d.store.(reviewedClaimer).ClaimReviewedDelivery(ctx, d.owner, d.config.Lease)
+	} else {
+		job, err = d.store.ClaimDelivery(ctx, d.owner, d.config.Lease)
+	}
 	if err != nil {
 		return err
 	}

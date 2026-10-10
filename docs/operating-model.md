@@ -92,7 +92,8 @@ verified findings, assumptions, and unknowns, shows citations and available
 observation provenance/timestamps, and exposes exact action arguments and policy
 outcomes. SHADOW performs no requester sends or connector writes. The delivery
 outbox/Jira sender and approval state machine are foundations for the next
-operator-reviewed sending and approved-action pilot.
+approved-action pilot. REVIEW now enables exact operator-reviewed Jira messages
+through the same durable outbox; infrastructure mutations remain denied.
 
 ## Evidence, research, and auditability
 

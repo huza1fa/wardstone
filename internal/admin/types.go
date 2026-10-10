@@ -100,10 +100,12 @@ type SetupComponent struct {
 }
 
 type RuntimeFeatures struct {
-	JiraIntake     bool `json:"jira_intake"`
-	Investigations bool `json:"investigations"`
-	GoogleEvidence bool `json:"google_evidence"`
-	JiraDelivery   bool `json:"jira_delivery"`
+	JiraIntake        bool `json:"jira_intake"`
+	Investigations    bool `json:"investigations"`
+	GoogleEvidence    bool `json:"google_evidence"`
+	JiraDelivery      bool `json:"jira_delivery"`
+	VendorEvidence    bool `json:"vendor_evidence"`
+	KnowledgeEvidence bool `json:"knowledge_evidence"`
 }
 
 type SetupStatus struct {

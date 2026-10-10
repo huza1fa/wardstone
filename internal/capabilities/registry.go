@@ -20,6 +20,7 @@ type Definition struct {
 	Description       string
 	Effect            domain.CapabilityEffect
 	ArgumentsVersion  int
+	ArgumentsSchema   json.RawMessage
 	Idempotent        bool
 	ValidateArguments func(json.RawMessage) error
 }
@@ -33,6 +34,9 @@ func (d Definition) Validate() error {
 	}
 	if d.ArgumentsVersion < 1 {
 		return errors.New("arguments version must be positive")
+	}
+	if len(d.ArgumentsSchema) > 0 && (!json.Valid(d.ArgumentsSchema) || len(d.ArgumentsSchema) > 16<<10) {
+		return errors.New("argument schema must be valid bounded JSON")
 	}
 	return nil
 }
@@ -56,6 +60,7 @@ func (r *Registry) Register(definitions ...Definition) error {
 		if _, exists := r.definitions[definition.Name]; exists {
 			return fmt.Errorf("%w: %s", ErrDuplicate, definition.Name)
 		}
+		definition.ArgumentsSchema = append(json.RawMessage(nil), definition.ArgumentsSchema...)
 		r.definitions[definition.Name] = definition
 	}
 	return nil
@@ -68,6 +73,7 @@ func (r *Registry) Get(name domain.CapabilityName) (Definition, error) {
 	if !ok {
 		return Definition{}, fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
+	definition.ArgumentsSchema = append(json.RawMessage(nil), definition.ArgumentsSchema...)
 	return definition, nil
 }
 

@@ -88,21 +88,21 @@ func (c *Client) SendRequesterMessage(ctx context.Context, ticket domain.Ticket,
 	request.SetBasicAuth(c.email, c.apiToken)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return "", sendError{err: fmt.Errorf("send Jira comment: %w", err), retryable: true}
+		return "", sendError{err: errors.New("Jira delivery outcome unknown; reconcile before resending"), retryable: false}
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		return "", sendError{err: fmt.Errorf("Jira comment API returned %s", response.Status), retryable: response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= http.StatusInternalServerError}
+		return "", sendError{err: fmt.Errorf("Jira comment API returned %s", response.Status), retryable: response.StatusCode == http.StatusTooManyRequests}
 	}
 	var result struct {
 		ID string `json:"id"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
-		return "", sendError{err: fmt.Errorf("decode Jira comment response: %w", err), retryable: true}
+		return "", sendError{err: errors.New("Jira delivery outcome unknown; invalid comment response"), retryable: false}
 	}
 	if result.ID == "" {
-		return "", sendError{err: errors.New("Jira comment response has no ID"), retryable: true}
+		return "", sendError{err: errors.New("Jira delivery outcome unknown; comment response has no ID"), retryable: false}
 	}
 	return result.ID, nil
 }

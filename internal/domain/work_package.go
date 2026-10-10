@@ -19,13 +19,22 @@ const (
 )
 
 type WorkPackage struct {
-	Version          int       `json:"version"`
-	Summary          string    `json:"summary"`
-	Findings         []Finding `json:"findings"`
-	Unknowns         []string  `json:"unknowns"`
-	EscalationReason string    `json:"escalation_reason"`
-	RequesterSummary string    `json:"requester_summary"`
-	ExpectedImpact   string    `json:"expected_impact"`
+	Version          int             `json:"version"`
+	Summary          string          `json:"summary"`
+	Findings         []Finding       `json:"findings"`
+	Unknowns         []string        `json:"unknowns"`
+	EscalationReason string          `json:"escalation_reason"`
+	RequesterSummary string          `json:"requester_summary"`
+	ExpectedImpact   string          `json:"expected_impact"`
+	RiskAssessment   *RiskAssessment `json:"risk_assessment,omitempty"`
+}
+
+// A model-generated risk rating is a provisional assessment of cited sources,
+// never business authorization or an independent certification.
+type RiskAssessment struct {
+	Rating      string       `json:"rating"`
+	Rationale   string       `json:"rationale"`
+	EvidenceIDs []EvidenceID `json:"evidence_ids"`
 }
 
 type Finding struct {
@@ -40,6 +49,11 @@ func (w *WorkPackage) Clone() *WorkPackage {
 	}
 	copy := *w
 	copy.Unknowns = append([]string(nil), w.Unknowns...)
+	if w.RiskAssessment != nil {
+		risk := *w.RiskAssessment
+		risk.EvidenceIDs = append([]EvidenceID(nil), risk.EvidenceIDs...)
+		copy.RiskAssessment = &risk
+	}
 	if w.Findings != nil {
 		copy.Findings = make([]Finding, len(w.Findings))
 		for i, finding := range w.Findings {
@@ -65,6 +79,9 @@ func (w WorkPackage) MarshalJSON() ([]byte, error) {
 			copy.Findings[i].EvidenceIDs = []EvidenceID{}
 		}
 	}
+	if copy.RiskAssessment != nil && copy.RiskAssessment.EvidenceIDs == nil {
+		copy.RiskAssessment.EvidenceIDs = []EvidenceID{}
+	}
 	type plain WorkPackage
 	return json.Marshal((*plain)(copy))
 }
@@ -85,6 +102,26 @@ func (w *WorkPackage) Validate(supplied []Evidence) error {
 		for _, id := range finding.EvidenceIDs {
 			if !known[id] {
 				return fmt.Errorf("finding references unknown evidence %q", id)
+			}
+		}
+	}
+	if w.RiskAssessment != nil {
+		for _, id := range w.RiskAssessment.EvidenceIDs {
+			if !known[id] {
+				return fmt.Errorf("risk assessment references unknown evidence %q", id)
+			}
+		}
+		if w.RiskAssessment.Rating != "UNKNOWN" {
+			hasDocument := false
+			for _, item := range supplied {
+				for _, id := range w.RiskAssessment.EvidenceIDs {
+					if item.ID == id && item.Kind == "research.vendor_document" {
+						hasDocument = true
+					}
+				}
+			}
+			if !hasDocument {
+				return errors.New("known vendor risk rating requires collected vendor document evidence")
 			}
 		}
 	}
@@ -152,6 +189,31 @@ func (w *WorkPackage) ValidateStructure() error {
 		return errors.New("work package exceeds total citation count limit")
 	}
 	unknowns := make(map[string]bool)
+	if risk := w.RiskAssessment; risk != nil {
+		if risk.Rating != "LOW" && risk.Rating != "MODERATE" && risk.Rating != "HIGH" && risk.Rating != "UNKNOWN" {
+			return errors.New("risk rating must be LOW, MODERATE, HIGH, or UNKNOWN")
+		}
+		if err := validateText("risk rationale", risk.Rationale, 4000, true); err != nil {
+			return err
+		}
+		if len(risk.EvidenceIDs) > 32 || (risk.Rating != "UNKNOWN" && len(risk.EvidenceIDs) == 0) {
+			return errors.New("known risk rating requires bounded citations")
+		}
+		seen := make(map[EvidenceID]bool)
+		for _, id := range risk.EvidenceIDs {
+			if err := validateText("risk evidence ID", string(id), 128, true); err != nil {
+				return err
+			}
+			if strings.TrimSpace(string(id)) != string(id) || seen[id] {
+				return errors.New("duplicate or noncanonical risk evidence ID")
+			}
+			seen[id] = true
+			citations++
+		}
+		if citations > MaxWorkPackageCitations {
+			return errors.New("work package exceeds total citation count limit")
+		}
+	}
 	for _, unknown := range w.Unknowns {
 		if err := validateText("unknown", unknown, 2000, true); err != nil {
 			return err
@@ -178,9 +240,14 @@ func (w *WorkPackage) UnmarshalJSON(data []byte) error {
 	if len(data) > MaxWorkPackageBytes || !utf8.Valid(data) {
 		return errors.New("invalid work package encoding or size")
 	}
-	fields, err := strictFields(data, "version", "summary", "findings", "unknowns", "escalation_reason", "requester_summary", "expected_impact")
+	fields, err := strictFields(data, "version", "summary", "findings", "unknowns", "escalation_reason", "requester_summary", "expected_impact", "risk_assessment")
 	if err != nil {
 		return err
+	}
+	if raw, ok := fields["risk_assessment"]; ok {
+		if _, err := strictFields(raw, "rating", "rationale", "evidence_ids"); err != nil {
+			return err
+		}
 	}
 	if raw, ok := fields["findings"]; ok {
 		var findings []json.RawMessage

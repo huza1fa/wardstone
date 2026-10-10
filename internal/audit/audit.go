@@ -37,6 +37,7 @@ const (
 	InvestigationResumed      EventType = "investigation.resumed"
 	RequesterMessageDelivered EventType = "requester.message_delivered"
 	RequesterMessageFailed    EventType = "requester.message_failed"
+	RequesterMessageReviewed  EventType = "requester.message_reviewed"
 )
 
 type ActorType string
@@ -65,4 +66,23 @@ func Data(value any) json.RawMessage {
 		panic(err)
 	}
 	return data
+}
+
+// EvidenceData retains source provenance without copying document contents or
+// local filesystem paths into the audit timeline.
+func EvidenceData(item domain.Evidence) map[string]any {
+	result := map[string]any{"evidence_id": item.ID, "capability": item.Capability, "kind": item.Kind, "observed_at": item.ObservedAt}
+	if item.Source == "research" {
+		var document struct {
+			Title     string `json:"title"`
+			URL       string `json:"url"`
+			Digest    string `json:"content_sha256"`
+			ClaimType string `json:"claim_type"`
+			Truncated bool   `json:"truncated"`
+		}
+		if json.Unmarshal(item.Data, &document) == nil {
+			result["title"], result["source_url"], result["content_sha256"], result["claim_type"], result["truncated"] = document.Title, document.URL, document.Digest, document.ClaimType, document.Truncated
+		}
+	}
+	return result
 }

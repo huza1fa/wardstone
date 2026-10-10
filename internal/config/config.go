@@ -6,44 +6,49 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/wardstone-project/wardstone/internal/connectors/google"
+	"github.com/wardstone-project/wardstone/internal/connectors/research"
 	"github.com/wardstone-project/wardstone/internal/domain"
 	"github.com/wardstone-project/wardstone/internal/policy"
 	"github.com/wardstone-project/wardstone/internal/specialists"
 )
 
 type Config struct {
-	AccessHelp           AccessHelpConfig
-	DatabaseURL          string
-	ListenAddress        string
-	Mode                 domain.OperatingMode
-	Workers              int
-	MaxCollectors        int
-	CollectorTimeout     time.Duration
-	ModelTimeout         time.Duration
-	JobLease             time.Duration
-	ApprovalLifetime     time.Duration
-	MaxHandoffs          int
-	MaxFollowUpQuestions int
-	JiraWebhookSecret    string
-	JiraBaseURL          string
-	JiraEmail            string
-	JiraAPIToken         string
-	OperatorToken        string
-	GoogleBaseURL        string
-	GoogleAccessToken    string
-	OpenAIBaseURL        string
-	OpenAIAPIKey         string
-	OpenAIModel          string
-	PolicyRules          map[domain.CapabilityName]policy.RuleMode
-	Specialists          []specialists.Profile
-	RoutingRules         []specialists.RouteRule
-	IntentClassification specialists.IntentConfig
+	AccessHelp            AccessHelpConfig
+	VendorSources         research.Catalog
+	KnowledgeSources      research.Catalog
+	DatabaseURL           string
+	ListenAddress         string
+	Mode                  domain.OperatingMode
+	Workers               int
+	MaxCollectors         int
+	CollectorTimeout      time.Duration
+	ModelTimeout          time.Duration
+	JobLease              time.Duration
+	ApprovalLifetime      time.Duration
+	MaxHandoffs           int
+	MaxFollowUpQuestions  int
+	JiraWebhookSecret     string
+	JiraBaseURL           string
+	JiraEmail             string
+	JiraAPIToken          string
+	OperatorToken         string
+	GoogleBaseURL         string
+	GoogleAccessToken     string
+	OpenAIBaseURL         string
+	OpenAIAPIKey          string
+	OpenAIModel           string
+	ModelStructuredOutput bool
+	PolicyRules           map[domain.CapabilityName]policy.RuleMode
+	Specialists           []specialists.Profile
+	RoutingRules          []specialists.RouteRule
+	IntentClassification  specialists.IntentConfig
 }
 
 type AccessHelpConfig struct{ resources map[string]string }
@@ -81,6 +86,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	var err error
+	if value := os.Getenv("WARDSTONE_MODEL_STRUCTURED_OUTPUT"); value != "" {
+		config.ModelStructuredOutput, err = strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, errors.New("WARDSTONE_MODEL_STRUCTURED_OUTPUT must be a boolean")
+		}
+	}
 	if config.Workers, err = intValue("WARDSTONE_WORKERS", 4); err != nil {
 		return Config{}, err
 	}
@@ -105,8 +116,20 @@ func Load() (Config, error) {
 	if config.MaxFollowUpQuestions, err = intValue("WARDSTONE_MAX_FOLLOW_UP_QUESTIONS", 3); err != nil {
 		return Config{}, err
 	}
-	if config.Mode != domain.OperatingModeShadow {
-		return Config{}, fmt.Errorf("only SHADOW mode is implemented; got %s", config.Mode)
+	// The shortcut selects OpenRouter only when no explicit model endpoint/key
+	// is configured. It must never forward this key to another provider.
+	if key := os.Getenv("WARDSTONE_AI_KEY"); key != "" && config.OpenAIAPIKey == "" {
+		if endpoint := os.Getenv("WARDSTONE_OPENAI_BASE_URL"); endpoint == "" || endpoint == "https://openrouter.ai/api/v1" {
+			config.OpenAIBaseURL, config.OpenAIAPIKey = "https://openrouter.ai/api/v1", key
+			if config.OpenAIModel == "" {
+				config.OpenAIModel = "openai/gpt-4.1-mini"
+			}
+		} else {
+			return Config{}, errors.New("WARDSTONE_AI_KEY requires the OpenRouter endpoint; use WARDSTONE_OPENAI_API_KEY for another provider")
+		}
+	}
+	if config.Mode != domain.OperatingModeShadow && config.Mode != domain.OperatingModeReview {
+		return Config{}, fmt.Errorf("only SHADOW and REVIEW modes are implemented; got %s", config.Mode)
 	}
 	if config.DatabaseURL == "" || config.OperatorToken == "" {
 		return Config{}, errors.New("WARDSTONE_DATABASE_URL and WARDSTONE_OPERATOR_TOKEN are required")
@@ -157,6 +180,10 @@ func loadPolicy(path string, config *Config) error {
 		return errors.New("configuration file must be at most 1 MiB")
 	}
 	var raw struct {
+		Research struct {
+			Vendors   research.Catalog `yaml:"vendors"`
+			Knowledge research.Catalog `yaml:"knowledge"`
+		} `yaml:"research"`
 		AccessHelp struct {
 			Resources map[string]string `yaml:"resources"`
 		} `yaml:"access_help"`
@@ -193,6 +220,18 @@ func loadPolicy(path string, config *Config) error {
 		return err
 	}
 	config.AccessHelp = AccessHelpConfig{resources: resources}
+	base, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	config.VendorSources, err = research.ValidateCatalog(raw.Research.Vendors, base, false)
+	if err != nil {
+		return fmt.Errorf("vendor sources: %w", err)
+	}
+	config.KnowledgeSources, err = research.ValidateCatalog(raw.Research.Knowledge, base, true)
+	if err != nil {
+		return fmt.Errorf("knowledge sources: %w", err)
+	}
 	config.PolicyRules = make(map[domain.CapabilityName]policy.RuleMode, len(raw.Capabilities))
 	for name, entry := range raw.Capabilities {
 		if name == "" {

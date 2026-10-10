@@ -274,7 +274,7 @@
         if (event.type === "action.proposed") entry.append(node("pre", { className: "literal-json", text: JSON.stringify(event.data?.arguments ?? null, null, 2) }));
         timeline.append(entry);
       }
-      body.replaceChildren(fields, routingCard(investigation.routing), reportCard(investigation.work_package, evidence), node("h3", { text: investigation.failure ? "Failure" : "Diagnosis" }), node("p", { className: "diagnosis", text: investigation.failure || investigation.diagnosis || "No diagnosis yet." }), actionsCard(events, evidence), conversationCard(messagesPayload), node("h3", { text: "Audit timeline" }), timeline);
+      body.replaceChildren(fields, routingCard(investigation.routing), reportCard(investigation.work_package, evidence), node("h3", { text: investigation.failure ? "Failure" : "Diagnosis" }), node("p", { className: "diagnosis", text: investigation.failure || investigation.diagnosis || "No diagnosis yet." }), actionsCard(events, evidence), conversationCard(messagesPayload, id, investigation.status), node("h3", { text: "Audit timeline" }), timeline);
     } catch (error) {
       if (state.token !== sessionToken || revision !== detailRevision) return;
       body.replaceChildren(emptyState("!", "Could not load investigation", error.message));
@@ -307,6 +307,10 @@
     }
     const data = event.data || {};
     citation.append(node("small", { text: `Source: ${event.actor_type === "CONNECTOR" ? event.actor_id || "unknown" : "unknown"} · Capability: ${data.capability || "not recorded"} · Kind: ${data.kind || "not recorded"}` }), node("small", { text: `Observed: ${data.observed_at || "not recorded"} · ${observationFreshness(data.observed_at)}` }));
+    if (data.title) citation.append(node("small", { text: `Document: ${data.title}` }));
+    if (data.source_url) citation.append(node("small", { text: `Source URL: ${data.source_url}` }));
+    if (data.content_sha256) citation.append(node("small", { text: `Content SHA-256: ${data.content_sha256}` }));
+    if (data.claim_type) citation.append(node("small", { text: `Evidence type: ${data.claim_type}${data.truncated ? " · excerpt truncated" : ""}` }));
     return citation;
   }
 
@@ -317,6 +321,10 @@
       return card;
     }
     card.append(node("small", { className: "detail-copy", text: `Report version ${report.version}` }), node("p", { className: "report-summary", text: report.summary }));
+    if (report.risk_assessment) {
+      card.append(node("h4", { text: "Provisional vendor risk" }), detailField("Risk rating", report.risk_assessment.rating), node("p", { className: "detail-copy", text: report.risk_assessment.rationale }));
+      for (const id of report.risk_assessment.evidence_ids || []) card.append(evidenceCitation(id, evidence));
+    }
     for (const [kind, label] of [["verified", "Verified findings"], ["assumption", "Assumptions"]]) {
       const findings = (report.findings || []).filter((finding) => finding.kind === kind);
       const list = node("ul", { className: `finding-list ${kind}` });
@@ -356,12 +364,41 @@
     return card;
   }
 
-  function conversationCard(payload) {
-    const card = node("section", { className: "conversation-card" }, [node("h3", { text: "Requester conversation" }), node("p", { className: "detail-note", text: "Outbound messages are drafts in SHADOW mode. This conversation ledger does not confirm delivery." })]);
+  function conversationCard(payload, investigationID, status) {
+    const card = node("section", { className: "conversation-card" }, [node("h3", { text: "Requester conversation" }), node("p", { className: "detail-note", text: "Outbound messages are drafts in SHADOW mode. In REVIEW mode, an operator approves the exact message to send. Delivery status is recorded separately." })]);
     if (payload.error) card.append(node("p", { className: "detail-copy", text: payload.error }));
     else if (!payload.messages?.length) card.append(node("p", { className: "detail-copy", text: "No messages recorded." }));
     for (const message of payload.messages || []) {
-      card.append(node("article", { className: "message-detail" }, [node("h4", { text: message.direction === "OUTBOUND" ? "Wardstone outbound / draft" : message.direction === "INBOUND" ? "Requester reply" : "Message" }), node("small", { className: "detail-copy", text: `${formatDate(message.created_at)} · ${message.author || "Unknown author"} · ${message.source || "Unknown source"}` }), node("p", { className: "detail-copy", text: message.body })]));
+      const article = node("article", { className: "message-detail" }, [node("h4", { text: message.direction === "OUTBOUND" ? "Wardstone outbound / draft" : message.direction === "INBOUND" ? "Requester reply" : "Message" }), node("small", { className: "detail-copy", text: `${formatDate(message.created_at)} · ${message.author || "Unknown author"} · ${message.source || "Unknown source"}` }), node("p", { className: "detail-copy", text: message.body })]);
+      const delivery = (payload.deliveries || []).find((item) => item.message_id === message.id);
+      if (delivery) {
+        article.append(detailField("Delivery", delivery.status), detailField("Reviewed by", delivery.reviewed_by), detailField("Remote comment", delivery.remote_id));
+        if (delivery.reviewed_body) article.append(node("h4", { text: "Approved message" }), node("p", { className: "detail-copy", text: delivery.reviewed_body }));
+        if (delivery.last_error) article.append(node("p", { className: "form-error", text: delivery.last_error }));
+      } else if (payload.review_enabled && message.direction === "OUTBOUND" && message.id === payload.messages.at(-1)?.id && ["WAITING_ON_REQUESTER", "COMPLETED"].includes(status)) {
+        const body = node("textarea", { id: `review-body-${message.id}`, rows: 6, maxLength: 16000, required: true, value: message.body });
+        const actor = node("input", { id: `review-actor-${message.id}`, required: true, maxLength: 256, value: state.actor, placeholder: "you@example.com" });
+        const button = node("button", { className: "button", type: "submit", text: "Approve and send to Jira" });
+        const error = node("p", { className: "form-error", role: "alert" });
+        const form = node("form", { className: "message-review" }, [node("label", { htmlFor: body.id, text: "Exact message to send" }), body, node("label", { htmlFor: actor.id, text: "Operator identity" }), actor, node("p", { className: "detail-note", text: "Submitting approves this exact text for Jira delivery and records your identity. Infrastructure changes remain disabled." }), button, error]);
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const token = state.token;
+          button.disabled = true;
+          error.textContent = "";
+          try {
+            await api(`/v1/investigations/${encodeURIComponent(investigationID)}/messages/${encodeURIComponent(message.id)}/review`, { method: "POST", body: JSON.stringify({ body: body.value, actor: actor.value.trim(), draft_digest: payload.draft_digests?.[message.id] }) });
+            if (state.token !== token) return;
+            state.actor = actor.value.trim();
+            sessionStorage.setItem("wardstone.operatorActor", state.actor);
+            showToast("Reviewed message queued for Jira delivery.");
+            await showInvestigation(investigationID);
+          } catch (failure) { if (state.token === token) error.textContent = failure.message; }
+          finally { button.disabled = false; }
+        });
+        article.append(form);
+      }
+      card.append(article);
     }
     return card;
   }

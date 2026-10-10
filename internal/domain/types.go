@@ -16,12 +16,13 @@ type OperatingMode string
 
 const (
 	OperatingModeShadow     OperatingMode = "SHADOW"
+	OperatingModeReview     OperatingMode = "REVIEW"
 	OperatingModeApproval   OperatingMode = "APPROVAL"
 	OperatingModeAutonomous OperatingMode = "AUTONOMOUS"
 )
 
 func (m OperatingMode) Valid() bool {
-	return m == OperatingModeShadow || m == OperatingModeApproval || m == OperatingModeAutonomous
+	return m == OperatingModeShadow || m == OperatingModeReview || m == OperatingModeApproval || m == OperatingModeAutonomous
 }
 
 type CapabilityEffect string
@@ -229,6 +230,10 @@ type MessageDelivery struct {
 	LeaseExpiresAt *time.Time     `json:"lease_expires_at,omitempty"`
 	CreatedAt      time.Time      `json:"created_at"`
 	DeliveredAt    *time.Time     `json:"delivered_at,omitempty"`
+	ReviewedBody   string         `json:"reviewed_body,omitempty"`
+	ReviewedBy     string         `json:"reviewed_by,omitempty"`
+	ReviewedAt     *time.Time     `json:"reviewed_at,omitempty"`
+	DraftDigest    string         `json:"draft_digest,omitempty"`
 }
 
 type Evidence struct {

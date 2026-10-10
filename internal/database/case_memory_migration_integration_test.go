@@ -76,6 +76,7 @@ func TestCaseMemoryMigrationPreservesUnknownLegacyProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	apply("000008_case_memory_reports.sql")
+	apply("000009_reviewed_messages.sql")
 	if err := CheckSchema(ctx, pool); err != nil {
 		t.Fatalf("upgraded schema: %v", err)
 	}
