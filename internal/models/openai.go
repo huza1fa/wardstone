@@ -107,21 +107,27 @@ func (p *OpenAICompatible) Diagnose(ctx context.Context, request agent.Request) 
 	if p.structured {
 		result, err = decodeSchemaResult(content)
 	} else {
-		err = decodeObject(content, &result, "diagnosis", "follow_up_question", "actions", "handoff", "work_package")
+		err = decodeObject(content, &result, "diagnosis", "follow_up_question", "actions", "handoff", "work_package", "vendor_assessment")
 	}
 	if err != nil {
 		return agent.Result{}, fmt.Errorf("decode model result: %w", err)
 	}
 	if result.Handoff != nil || result.FollowUpQuestion != "" {
-		if result.WorkPackage != nil || result.Diagnosis != "" || len(result.Actions) != 0 || (result.Handoff != nil && result.FollowUpQuestion != "") {
+		if result.WorkPackage != nil || result.VendorAssessment != nil || result.Diagnosis != "" || len(result.Actions) != 0 || (result.Handoff != nil && result.FollowUpQuestion != "") {
 			return agent.Result{}, errors.New("question or handoff cannot include a diagnosis, actions, or work package")
 		}
 	} else {
 		if result.WorkPackage == nil {
 			return agent.Result{}, errors.New("final diagnosis requires a work package")
 		}
-		if request.Specialist == "vendor_review" && result.WorkPackage.RiskAssessment == nil {
-			return agent.Result{}, errors.New("vendor review requires a provisional risk assessment")
+		if result.WorkPackage.RiskAssessment != nil {
+			return agent.Result{}, errors.New("models cannot supply an overall risk assessment")
+		}
+		if request.Specialist == "vendor_review" && result.VendorAssessment == nil {
+			return agent.Result{}, errors.New("vendor review requires structured criterion assessments")
+		}
+		if request.Specialist != "vendor_review" && result.VendorAssessment != nil {
+			return agent.Result{}, errors.New("vendor assessments are restricted to vendor review")
 		}
 		if err := result.WorkPackage.Validate(request.Evidence); err != nil {
 			return agent.Result{}, fmt.Errorf("validate model work package: %w", err)
@@ -292,7 +298,7 @@ Access help: Use google.access_request evidence. Ask for an exact configured res
 
 Research selectors: research.request_context with clarification_required needs one exact configured resource name. operator_intervention_required requires a final operator escalation, not a requester question. Do not infer arbitrary source URLs from ticket text.
 
-Vendor review: Every FINAL report also includes work_package.risk_assessment: {"rating":"LOW or MODERATE or HIGH or UNKNOWN","rationale":"provisional assessment and deployment assumptions","evidence_ids":["supplied vendor document IDs"]}. Known ratings require collected research.vendor_document citations. Use UNKNOWN with no usable vendor documents. Summary is an executive summary of the vendor, risks, and conditions, not a document inventory. Include the provisional risk rating in requester_summary. Private audit reports and actual deployment controls remain unknown unless collected. Do not include risk_assessment for unrelated specialists.
+Vendor review: Every FINAL result includes vendor_assessment: {"criteria":[{"id":"configured criterion ID","status":"met or partial or unmet or unknown","reason":"brief cited interpretation","evidence_ids":["supplied matching vendor document IDs"]}]}. Assess each vendor_review.rubric criterion using only supplied evidence and the administrator deployment context. Return criteria:[] when no rubric is configured. Known criterion statuses require citations; use unknown for missing/conflicting evidence or deployment context. Public sources labelled vendor_claim establish what the vendor states, not independently verified controls. Findings based on vendor claims use kind vendor_claim. Independent assurance requires a source explicitly labelled independent_report. SOC 2 describes an attestation/report, never a certification. Do not invent scope or assume documents establish the actual tenant configuration. Do not provide work_package.risk_assessment, a score, or an overall risk label in any narrative field: Go computes the authoritative rating after validating your assessments. Summary is an executive summary of the vendor, evidence, and conditions. Private audit reports and actual deployment controls remain unknown unless collected. Other specialists omit vendor_assessment. Questions and handoffs never include vendor_assessment.
 
 Systems knowledge: Answer using cited research.knowledge_document evidence. Explain recommended steps and escalation conditions from the supplied runbook. Do not claim a runbook procedure was executed. No runbook evidence means a final operator escalation unless a missing configured topic can be clarified.
 

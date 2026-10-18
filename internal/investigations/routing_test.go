@@ -378,7 +378,7 @@ func TestModelAssignmentRetainsSpecialistPermissions(t *testing.T) {
 			if r.Specialist != specialists.VendorReview || len(r.Evidence) != 1 {
 				t.Fatalf("request=%+v", r)
 			}
-			return agent.Result{Diagnosis: "Unsafe proposal", Actions: []agent.ProposedAction{{Capability: "test.write", Arguments: json.RawMessage(`{}`), Reason: "Attempt a capability outside the profile", EvidenceIDs: []domain.EvidenceID{r.Evidence[0].ID}}}}, nil
+			return agent.Result{WorkPackage: &domain.WorkPackage{Version: 1, Summary: "Unsafe proposal"}, VendorAssessment: &domain.VendorAssessment{Criteria: []domain.VendorCriterionAssessment{}}, Diagnosis: "Unsafe proposal", Actions: []agent.ProposedAction{{Capability: "test.write", Arguments: json.RawMessage(`{}`), Reason: "Attempt a capability outside the profile", EvidenceIDs: []domain.EvidenceID{r.Evidence[0].ID}}}}, nil
 		}}
 	service := newService(t, store, collectors, model, registryForTest(t), 1, func(c *investigations.Config) {
 		profiles := c.Specialists.Profiles()

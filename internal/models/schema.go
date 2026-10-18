@@ -31,25 +31,13 @@ func diagnosisSchema(request agent.Request) map[string]any {
 		sort.Strings(required)
 		return map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}
 	}
-	finding := object(map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"verified", "assumption"}}, "statement": text, "evidence_ids": citations})
+	finding := object(map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"verified", "vendor_claim", "assumption"}}, "statement": text, "evidence_ids": citations})
 	reportProperties := map[string]any{
 		"version": map[string]any{"type": "integer", "enum": []int{1}}, "summary": text,
 		"findings": map[string]any{"type": "array", "items": finding}, "unknowns": strings,
 		"escalation_reason": text, "requester_summary": text, "expected_impact": text,
 	}
-	if request.Specialist == "vendor_review" {
-		ratings := []string{"LOW", "MODERATE", "HIGH", "UNKNOWN"}
-		hasDocument := false
-		for _, item := range request.Evidence {
-			if item.Kind == "research.vendor_document" {
-				hasDocument = true
-			}
-		}
-		if !hasDocument {
-			ratings = []string{"UNKNOWN"}
-		}
-		reportProperties["risk_assessment"] = object(map[string]any{"rating": map[string]any{"type": "string", "enum": ratings}, "rationale": text, "evidence_ids": citations})
-	}
+
 	// Registered argument schemas produce exact objects. Capabilities without a
 	// schema use JSON text, decoded and validated by the capability registry.
 	action := object(map[string]any{"capability": text, "arguments_json": text, "reason": text, "evidence_ids": citations})
@@ -77,6 +65,21 @@ func diagnosisSchema(request agent.Request) map[string]any {
 	}
 	question := object(map[string]any{"follow_up_question": text})
 	final := object(map[string]any{"diagnosis": text, "actions": map[string]any{"type": "array", "items": action}, "work_package": object(reportProperties)})
+	if request.Specialist == "vendor_review" {
+		ids := []string{}
+		if request.VendorReview != nil && request.VendorReview.Rubric != nil {
+			for _, c := range request.VendorReview.Rubric.Criteria {
+				ids = append(ids, c.ID)
+			}
+		}
+		limit := len(ids)
+		if len(ids) == 0 {
+			ids = []string{"__rubric_unconfigured__"}
+		}
+		criterion := object(map[string]any{"id": map[string]any{"type": "string", "enum": ids}, "status": map[string]any{"type": "string", "enum": []string{"met", "partial", "unmet", "unknown"}}, "reason": text, "evidence_ids": citations})
+		final["properties"].(map[string]any)["vendor_assessment"] = object(map[string]any{"criteria": map[string]any{"type": "array", "items": criterion, "maxItems": limit}})
+		final["required"] = []string{"diagnosis", "actions", "work_package", "vendor_assessment"}
+	}
 	variants := []any{question, final}
 	if request.ResponseConstraint == "final_report" {
 		variants = []any{final}
@@ -107,13 +110,14 @@ func decodeSchemaResult(content string) (agent.Result, error) {
 			Reason        string                `json:"reason"`
 			EvidenceIDs   []domain.EvidenceID   `json:"evidence_ids"`
 		} `json:"actions"`
-		Handoff     *agent.Handoff      `json:"handoff"`
-		WorkPackage *domain.WorkPackage `json:"work_package"`
+		Handoff          *agent.Handoff           `json:"handoff"`
+		WorkPackage      *domain.WorkPackage      `json:"work_package"`
+		VendorAssessment *domain.VendorAssessment `json:"vendor_assessment"`
 	}
-	if err := decodeObject(string(envelope.Result), &wire, "diagnosis", "follow_up_question", "actions", "handoff", "work_package"); err != nil {
+	if err := decodeObject(string(envelope.Result), &wire, "diagnosis", "follow_up_question", "actions", "handoff", "work_package", "vendor_assessment"); err != nil {
 		return agent.Result{}, err
 	}
-	result := agent.Result{Diagnosis: wire.Diagnosis, FollowUpQuestion: wire.FollowUpQuestion, Handoff: wire.Handoff, WorkPackage: wire.WorkPackage}
+	result := agent.Result{Diagnosis: wire.Diagnosis, FollowUpQuestion: wire.FollowUpQuestion, Handoff: wire.Handoff, WorkPackage: wire.WorkPackage, VendorAssessment: wire.VendorAssessment}
 	for _, action := range wire.Actions {
 		arguments := action.Arguments
 		if len(arguments) > 0 && action.ArgumentsJSON != "" {

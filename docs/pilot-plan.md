@@ -43,13 +43,34 @@ Status: completed. See [pilot results](pilot-results.md).
   delivery, duplicate webhooks/replies, and continuity across service restarts.
 - Record sanitized outcomes and limits in docs/pilot-results.md.
 
+## Jira delivery recovery
+
+Implemented after the initial pilot: operator-triggered Jira comment verification,
+explicit resends of unchanged reviewed text, separate uncertain/failed/superseded
+states, revision-checked recovery decisions, and durable send/recovery audit
+history. Recovery uses the existing single-administrator authentication. Database,
+connector, and console fixtures cover crash recovery and concurrent decisions;
+real Jira tenant verification remains a pilot task. See
+[recovery setup and API](development.md#jira-delivery-recovery).
+
+## Deterministic vendor scoring
+
+Implemented after delivery recovery: Go computes ratings from a configurable
+versioned rubric and administrator deployment context. Structured criterion
+assessments carry citations; missing scope, sources, or assurance remain visible
+gaps and withhold a numeric score. Reports retain immutable rubric snapshots,
+SYSTEM scoring audit events, and attributed vendor claims. Go generates the
+requester-summary rating text. Twelve synthetic evaluation scenarios and
+provider/database/console tests cover the implementation. Human calibration of
+the example rubric and review of the seed evaluation set remain outstanding.
+See [vendor risk scoring](development.md#vendor-risk-scoring).
+
 ## Follow-on batch
 
-1. Calibrate vendor risk with an explicit scoring rubric, required deployment
-   assumptions, and a small reviewed evaluation set. Validate claim wording as
-   well as citation identity; distinguish SOC 2 attestations from certifications.
-   Add operator-visible evidence gaps and a reconciliation workflow for uncertain
-   Jira sends before expanding requester delivery.
+1. Review and calibrate the implemented vendor rubric and seed evaluation set
+   against actual deployment requirements and reviewed source interpretations.
+   Expand semantic wording evaluations and validate delivery recovery against a
+   real Jira tenant before expanding requester delivery.
 2. Implement one approved Google group addition with action-digest binding,
    freshness recheck, durable execution state, and an independent membership read
    proving the postcondition. Exercise crash recovery with fixtures first, then

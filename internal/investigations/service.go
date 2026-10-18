@@ -44,6 +44,7 @@ type realClock struct{}
 func (realClock) Now() time.Time { return time.Now().UTC() }
 
 type Config struct {
+	VendorRisk               domain.VendorRiskConfig
 	MaxConcurrentCollectors  int
 	CollectorTimeout         time.Duration
 	ModelTimeout             time.Duration
@@ -97,6 +98,11 @@ func NewService(store Store, collectors []connectors.EvidenceCollector, model ag
 	}
 	if config.MaxHandoffs < 1 || config.MaxFollowUpQuestions < 1 {
 		return nil, errors.New("handoff and follow-up question limits must be positive")
+	}
+	var err error
+	config.VendorRisk, err = config.VendorRisk.Validated()
+	if err != nil {
+		return nil, fmt.Errorf("vendor risk configuration: %w", err)
 	}
 	dispatcher, err := specialists.NewDispatcherWithRules(config.Specialists, config.RoutingRules)
 	if err != nil {
@@ -385,6 +391,11 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 			actionContracts = append(actionContracts, agent.ActionContract{Capability: name, ArgumentsVersion: definition.ArgumentsVersion, ArgumentsSchema: definition.ArgumentsSchema})
 		}
 	}
+	var vendorContext *domain.VendorReviewContext
+	if profile.Name == specialists.VendorReview {
+		c := s.vendorReviewContext(evidence)
+		vendorContext = &c
+	}
 	request, freshEvidence, err := s.boundedCaseRequest(agent.Request{
 		InvestigationID: id, Ticket: ticket, Conversation: messages, Warnings: warnings, Handoffs: handoffs,
 		Specialist: profile.Name, Instructions: profile.Instructions,
@@ -392,11 +403,16 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 		ResponseConstraint: agent.ConstraintForEvidence(evidence),
 		HandoffOptions:     handoffOptions,
 		ActionContracts:    actionContracts,
+		VendorReview:       vendorContext,
 	}, evidence, prior, profile, s.clock.Now())
 	if err != nil {
 		return err
 	}
-	// Freeze citation authority before invoking a provider that can mutate its request.
+	// Freeze policy and citation authority before invoking a provider that can mutate its request.
+	var scoringContext domain.VendorReviewContext
+	if vendorContext != nil {
+		scoringContext = vendorContext.Clone()
+	}
 	supplied := cloneEvidence(request.Evidence)
 
 	modelCtx, cancel := context.WithTimeout(ctx, s.config.ModelTimeout)
@@ -415,7 +431,7 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 		return errors.New("model follow-up question must be nonblank valid UTF-8 without NUL")
 	}
 	if result.Handoff != nil {
-		if result.Diagnosis != "" || result.FollowUpQuestion != "" || len(result.Actions) != 0 || result.WorkPackage != nil {
+		if result.Diagnosis != "" || result.FollowUpQuestion != "" || len(result.Actions) != 0 || result.WorkPackage != nil || result.VendorAssessment != nil {
 			return errors.New("model handoff cannot include a diagnosis, question, actions, or work package")
 		}
 		if result.Handoff.Specialist == "" || strings.TrimSpace(result.Handoff.Reason) == "" || len(result.Handoff.Reason) > maxActionReasonSize || !utf8.ValidString(result.Handoff.Reason) || strings.ContainsRune(result.Handoff.Reason, 0) {
@@ -433,7 +449,7 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 		return nil
 	}
 	if result.FollowUpQuestion != "" {
-		if result.Diagnosis != "" || len(result.Actions) != 0 || result.WorkPackage != nil {
+		if result.Diagnosis != "" || len(result.Actions) != 0 || result.WorkPackage != nil || result.VendorAssessment != nil {
 			return errors.New("model follow-up question cannot include a diagnosis, actions, or work package")
 		}
 		if err := s.checkLimit(ctx, id, audit.RequesterQuestionAsked, s.config.MaxFollowUpQuestions, "follow-up question"); err != nil {
@@ -449,6 +465,49 @@ func (s *Service) Run(ctx context.Context, id domain.InvestigationID) (runErr er
 			return fmt.Errorf("wait for requester: %w", err)
 		}
 		return nil
+	}
+	if result.WorkPackage != nil && result.WorkPackage.RiskAssessment != nil {
+		return errors.New("model-supplied overall risk assessment is not accepted")
+	}
+	if profile.Name == specialists.VendorReview {
+		if result.WorkPackage == nil || result.VendorAssessment == nil {
+			return errors.New("vendor review requires a report and criterion assessments")
+		}
+		if err := domain.ValidateVendorNarrative(result.WorkPackage, result.Diagnosis, *result.VendorAssessment); err != nil {
+			return err
+		}
+		risk, err := domain.ComputeVendorRisk(scoringContext, *result.VendorAssessment, supplied, evidence)
+		if err != nil {
+			return fmt.Errorf("compute vendor risk: %w", err)
+		}
+		result.WorkPackage = result.WorkPackage.Clone()
+		result.WorkPackage.RiskAssessment = risk
+		// Vendor documents support attributed claims, not independently verified controls.
+		claimIDs := map[domain.EvidenceID]bool{}
+		for _, e := range supplied {
+			var d struct {
+				ClaimType string `json:"claim_type"`
+			}
+			if e.Kind == "research.vendor_document" && json.Unmarshal(e.Data, &d) == nil && d.ClaimType == "vendor_claim" {
+				claimIDs[e.ID] = true
+			}
+		}
+		for i, f := range result.WorkPackage.Findings {
+			if f.Kind == "verified" {
+				for _, id := range f.EvidenceIDs {
+					if claimIDs[id] {
+						result.WorkPackage.Findings[i].Kind = "vendor_claim"
+						break
+					}
+				}
+			}
+		}
+		result.WorkPackage.RequesterSummary = fmt.Sprintf("Provisional vendor risk: %s. %s %d evidence gap(s) require review. No vendor approval or infrastructure change has been performed.", risk.Rating, risk.Rationale, len(risk.Scoring.Gaps))
+		if len(risk.Scoring.Gaps) > 0 {
+			result.WorkPackage.EscalationReason = "An operator must resolve the vendor evidence gaps and deployment context before a complete rating is available."
+		}
+	} else if result.VendorAssessment != nil {
+		return errors.New("vendor assessment is restricted to the vendor specialist")
 	}
 	result.WorkPackage = result.WorkPackage.Clone()
 	if result.WorkPackage != nil {

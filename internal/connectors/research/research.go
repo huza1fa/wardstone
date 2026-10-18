@@ -34,9 +34,10 @@ const (
 )
 
 type Source struct {
-	Title string `yaml:"title" json:"title"`
-	URL   string `yaml:"url,omitempty" json:"url,omitempty"`
-	Path  string `yaml:"path,omitempty" json:"-"`
+	ClaimType string `yaml:"claim_type,omitempty" json:"claim_type,omitempty"`
+	Title     string `yaml:"title" json:"title"`
+	URL       string `yaml:"url,omitempty" json:"url,omitempty"`
+	Path      string `yaml:"path,omitempty" json:"-"`
 }
 
 type Catalog map[string][]Source
@@ -57,6 +58,9 @@ func ValidateCatalog(input Catalog, base string, local bool) (Catalog, error) {
 			return nil, errors.New("duplicate normalized research resource")
 		}
 		for _, source := range sources {
+			if source.ClaimType != "" && (local || (source.ClaimType != "vendor_claim" && source.ClaimType != "independent_report")) {
+				return nil, errors.New("invalid source claim_type")
+			}
 			if !validText(source.Title, 256) || (source.URL == "") == (source.Path == "") {
 				return nil, errors.New("research sources require a title and exactly one URL or path")
 			}
@@ -173,6 +177,9 @@ func (c *Collector) CollectCase(ctx context.Context, ticket domain.Ticket, messa
 		}
 		digest := sha256.Sum256(data)
 		kind, claimType := "research.vendor_document", "vendor_claim"
+		if source.ClaimType != "" {
+			claimType = source.ClaimType
+		}
 		if c.capability == KnowledgeCollect {
 			kind, claimType = "research.knowledge_document", "administrator_document"
 		}

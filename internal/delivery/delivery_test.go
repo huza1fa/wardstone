@@ -43,7 +43,7 @@ func TestDispatcherRetriesOnlyRetryableErrors(t *testing.T) {
 	}
 }
 
-func TestDispatcherMarksPermanentFailureDead(t *testing.T) {
+func TestDispatcherTreatsUntypedFailureAsUncertain(t *testing.T) {
 	t.Parallel()
 	store := &fakeStore{job: testJob()}
 	dispatcher, err := NewDispatcher(store, senderFunc(func(context.Context, domain.Ticket, domain.CaseMessage) (string, error) {
@@ -55,7 +55,7 @@ func TestDispatcherMarksPermanentFailureDead(t *testing.T) {
 	if err := dispatcher.runOne(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !store.failed || store.retried {
+	if !store.failed || store.retried || store.failureStatus != domain.DeliveryUncertain {
 		t.Fatalf("store = %+v", store)
 	}
 }
@@ -65,6 +65,7 @@ type fakeStore struct {
 	completedRemoteID string
 	retried           bool
 	failed            bool
+	failureStatus     domain.DeliveryStatus
 }
 
 func (s *fakeStore) ClaimDelivery(context.Context, string, time.Duration) (Job, error) {
@@ -78,7 +79,8 @@ func (s *fakeStore) RetryDelivery(context.Context, Job, string, time.Time, time.
 	s.retried = true
 	return nil
 }
-func (s *fakeStore) FailDelivery(context.Context, Job, string, time.Time) error {
+func (s *fakeStore) FailDelivery(_ context.Context, _ Job, _ string, status domain.DeliveryStatus, _ time.Time) error {
+	s.failureStatus = status
 	s.failed = true
 	return nil
 }
@@ -96,4 +98,31 @@ func (e testSendError) Retryable() bool { return e.retry }
 
 func testJob() Job {
 	return Job{Delivery: domain.MessageDelivery{ID: "dly_1", MessageID: "msg_1", Attempt: 1, LeaseOwner: "owner"}, Message: domain.CaseMessage{ID: "msg_1", InvestigationID: "inv_1", Source: "jira", Direction: domain.MessageOutbound, Body: "Question"}, Ticket: domain.Ticket{Source: "jira", ExternalID: "HELP-42"}}
+}
+
+type outcomeError struct{ unknown bool }
+
+func (e outcomeError) Error() string        { return "fixture send error" }
+func (e outcomeError) OutcomeUnknown() bool { return e.unknown }
+
+func TestDispatcherSeparatesDefiniteAndUncertainOutcomes(t *testing.T) {
+	for _, unknown := range []bool{true, false} {
+		store := &fakeStore{job: testJob()}
+		d, err := NewDispatcher(store, senderFunc(func(context.Context, domain.Ticket, domain.CaseMessage) (string, error) {
+			return "", outcomeError{unknown: unknown}
+		}), slog.New(slog.NewTextHandler(io.Discard, nil)), Config{Lease: time.Second, PollInterval: time.Second, MaxAttempts: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.runOne(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		want := domain.DeliveryFailed
+		if unknown {
+			want = domain.DeliveryUncertain
+		}
+		if store.failureStatus != want || store.retried {
+			t.Fatalf("outcome status=%s want=%s", store.failureStatus, want)
+		}
+	}
 }

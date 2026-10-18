@@ -75,12 +75,12 @@ type rowQuerier interface {
 
 func readDelivery(ctx context.Context, query rowQuerier, id domain.MessageID) (domain.MessageDelivery, error) {
 	var d domain.MessageDelivery
-	err := query.QueryRow(ctx, `SELECT id,message_id,status,attempt,remote_id,last_error,available_at,created_at,delivered_at,COALESCE(reviewed_body,''),COALESCE(reviewed_by,''),reviewed_at,COALESCE(draft_digest,'') FROM message_deliveries WHERE message_id=$1`, id).Scan(&d.ID, &d.MessageID, &d.Status, &d.Attempt, &d.RemoteID, &d.LastError, &d.AvailableAt, &d.CreatedAt, &d.DeliveredAt, &d.ReviewedBody, &d.ReviewedBy, &d.ReviewedAt, &d.DraftDigest)
+	err := query.QueryRow(ctx, `SELECT id,message_id,status,attempt,remote_id,last_error,available_at,created_at,delivered_at,COALESCE(reviewed_body,''),COALESCE(reviewed_by,''),reviewed_at,COALESCE(draft_digest,''),revision,correlation_required FROM message_deliveries WHERE message_id=$1`, id).Scan(&d.ID, &d.MessageID, &d.Status, &d.Attempt, &d.RemoteID, &d.LastError, &d.AvailableAt, &d.CreatedAt, &d.DeliveredAt, &d.ReviewedBody, &d.ReviewedBy, &d.ReviewedAt, &d.DraftDigest, &d.Revision, &d.CorrelationRequired)
 	return d, err
 }
 
 func (s *Store) ListDeliveries(ctx context.Context, id domain.InvestigationID) ([]domain.MessageDelivery, error) {
-	rows, err := s.pool.Query(ctx, `SELECT d.id,d.message_id,d.status,d.attempt,d.remote_id,d.last_error,d.available_at,d.created_at,d.delivered_at,COALESCE(d.reviewed_body,''),COALESCE(d.reviewed_by,''),d.reviewed_at,COALESCE(d.draft_digest,'') FROM message_deliveries d JOIN case_messages m ON m.id=d.message_id WHERE m.investigation_id=$1 ORDER BY d.created_at,d.id`, id)
+	rows, err := s.pool.Query(ctx, `SELECT d.id,d.message_id,d.status,d.attempt,d.remote_id,d.last_error,d.available_at,d.created_at,d.delivered_at,COALESCE(d.reviewed_body,''),COALESCE(d.reviewed_by,''),d.reviewed_at,COALESCE(d.draft_digest,''),d.revision,d.correlation_required FROM message_deliveries d JOIN case_messages m ON m.id=d.message_id WHERE m.investigation_id=$1 ORDER BY d.created_at,d.id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +88,7 @@ func (s *Store) ListDeliveries(ctx context.Context, id domain.InvestigationID) (
 	result := []domain.MessageDelivery{}
 	for rows.Next() {
 		var d domain.MessageDelivery
-		if err := rows.Scan(&d.ID, &d.MessageID, &d.Status, &d.Attempt, &d.RemoteID, &d.LastError, &d.AvailableAt, &d.CreatedAt, &d.DeliveredAt, &d.ReviewedBody, &d.ReviewedBy, &d.ReviewedAt, &d.DraftDigest); err != nil {
+		if err := rows.Scan(&d.ID, &d.MessageID, &d.Status, &d.Attempt, &d.RemoteID, &d.LastError, &d.AvailableAt, &d.CreatedAt, &d.DeliveredAt, &d.ReviewedBody, &d.ReviewedBy, &d.ReviewedAt, &d.DraftDigest, &d.Revision, &d.CorrelationRequired); err != nil {
 			return nil, err
 		}
 		result = append(result, d)

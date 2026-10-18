@@ -429,3 +429,149 @@ test("reviewed delivery and provisional risk remain literal and cite their evide
   for (const value of ["Provisional vendor risk", "MODERATE", "vendor-doc", "SENT", "operator", "comment-1", hostile]) assert.ok(text.includes(value));
   assert.ok(!descendants(get("dialog-body")).some((item) => item.tagName === "script" || item.className === "message-review"));
 });
+
+function recoveryHarness({ status = "NEEDS_RECONCILIATION", enabled = true, superseded = false, recover } = {}) {
+  const delivery = { message_id: "draft", status, revision: 4, attempt: 1, reviewed_at: "2026-10-17T12:00:00Z", reviewed_by: "original-operator", reviewed_body: "Exact approved text" };
+  const messages = [{ id: "draft", direction: "OUTBOUND", body: "Original draft" }];
+  if (superseded) messages.push({ id: "reply", direction: "INBOUND", body: "New information" });
+  const responses = {
+    "/v1/investigations/recovery": { body: { status: "WAITING_ON_REQUESTER" } },
+    "/v1/investigations/recovery/messages": () => ({ body: { messages, deliveries: [delivery], recovery_enabled: enabled } }),
+    "/v1/investigations/recovery/messages/draft/recovery": recover || (() => { delivery.status = "SENT"; delivery.remote_id = "10001"; return { body: { outcome: "verified" } }; }),
+  };
+  const h = harness(responses);
+  openInvestigation(h.get, "recovery");
+  return { ...h, delivery };
+}
+
+function recoveryFields(get) {
+  const form = descendants(get("dialog-body")).find((e) => e.className === "message-recovery");
+  assert.ok(form, "Recovery controls missing");
+  const field = (id) => descendants(form).find((e) => e.id === `recovery-${id}-draft`);
+  const actor = field("actor"), reason = field("reason"), remote = field("comment"), ack = field("risk");
+  actor.value = "operator@example.test";
+  reason.value = "Checked Jira after restart";
+  remote.value = "10001";
+  return { form, actor, reason, remote, ack, resend: descendants(form).find((e) => e.textContent === "Resend approved message") };
+}
+
+test("delivery reconciliation sends the selected comment and revision without approving new text", async () => {
+  const { get, requests } = recoveryHarness();
+  await settle();
+  const { form } = recoveryFields(get);
+  await submit(form);
+  const request = requests.find((r) => r.url.endsWith("/recovery") && r.options.method === "POST");
+  assert.deepEqual(JSON.parse(request.options.body), { action: "reconcile", actor: "operator@example.test", reason: "Checked Jira after restart", revision: 4, remote_id: "10001" });
+  const text = textOf(get("dialog-body"));
+  assert.match(text, /Jira comment verified/);
+  assert.match(text, /Exact approved text/);
+  assert.ok(!descendants(get("dialog-body")).some((e) => e.className === "message-recovery"));
+});
+
+test("resend requires explicit duplicate-risk acknowledgement and submits once", async () => {
+  let finish;
+  const { get, requests } = recoveryHarness({ recover: () => new Promise((resolve) => { finish = resolve; }) });
+  await settle();
+  const { form, ack, resend } = recoveryFields(get);
+  await resend.listeners.click();
+  assert.match(textOf(form), /Acknowledge the risk/);
+  assert.equal(requests.filter((r) => r.options.method === "POST").length, 0);
+  ack.checked = true;
+  const pending = resend.listeners.click();
+  await settle();
+  await resend.listeners.click();
+  assert.equal(requests.filter((r) => r.options.method === "POST").length, 1);
+  const request = requests.find((r) => r.options.method === "POST");
+  assert.deepEqual(JSON.parse(request.options.body), { action: "resend", actor: "operator@example.test", reason: "Checked Jira after restart", revision: 4, acknowledge_duplicate_risk: true });
+  finish({ body: { outcome: "resend_queued" } });
+  await pending;
+});
+
+test("unsuccessful Jira verification preserves uncertainty and explains that nothing was sent", async () => {
+  for (const outcome of ["comment_not_found", "comment_mismatch", "jira_verification_unavailable"]) {
+    const { get } = recoveryHarness({ recover: () => ({ body: { outcome } }) });
+    await settle();
+    await submit(recoveryFields(get).form);
+    const text = textOf(get("dialog-body"));
+    assert.match(text, /Delivery remains unresolved; no message was sent/);
+    assert.ok(descendants(get("dialog-body")).some((e) => e.className === "message-recovery"));
+  }
+});
+
+test("recovery conflicts preserve operator input and render errors literally", async () => {
+  const hostile = '<script>alert("conflict")</script>';
+  const { get } = recoveryHarness({ recover: () => ({ status: 409, body: { error: hostile } }) });
+  await settle();
+  const { form, reason } = recoveryFields(get);
+  await submit(form);
+  assert.equal(reason.value, "Checked Jira after restart");
+  assert.ok(textOf(form).includes(hostile));
+  assert.ok(!descendants(form).some((e) => e.tagName === "script"));
+});
+
+test("recovery controls follow backend enablement and restrict superseded messages to verification", async () => {
+  for (const status of ["PENDING", "RUNNING", "SENT", "SUPERSEDED"]) {
+    const { get } = recoveryHarness({ status });
+    await settle();
+    assert.ok(!descendants(get("dialog-body")).some((e) => e.className === "message-recovery"));
+  }
+  const disabled = recoveryHarness({ enabled: false });
+  await settle();
+  assert.ok(!descendants(disabled.get("dialog-body")).some((e) => e.className === "message-recovery"));
+  const historical = recoveryHarness({ superseded: true });
+  await settle();
+  const { form, resend } = recoveryFields(historical.get);
+  assert.equal(resend, undefined);
+  assert.match(textOf(form), /verify a past delivery, but cannot resend/);
+});
+
+test("a late recovery response cannot reopen or replace a different investigation", async () => {
+  let finish;
+  const { get } = recoveryHarness({ recover: () => new Promise((resolve) => { finish = resolve; }) });
+  await settle();
+  const pending = submit(recoveryFields(get).form);
+  await settle();
+  openInvestigation(get, "another-case");
+  await settle();
+  finish({ body: { outcome: "verified" } });
+  await pending;
+  assert.equal(get("dialog-title").textContent, "another-case");
+  assert.ok(!textOf(get("dialog-body")).includes("Jira comment verified"));
+});
+
+test("Go vendor scoring exposes rubric, context, criterion interpretations and evidence gaps", async () => {
+  const hostile = '<img src=x onerror="alert(1)">';
+  const report = { version: 1, summary: "Vendor evidence review", findings: [{ kind: "vendor_claim", statement: hostile, evidence_ids: ["doc"] }], unknowns: [], risk_assessment: {
+    rating: "UNKNOWN", rationale: "Required evidence is incomplete", evidence_ids: ["doc"], scoring: {
+      method: "weighted-v1", rubric_digest: "stored-rubric-digest", context: { vendor: "acme", deployment: { use_case: "Internal collaboration", data_classification: "Internal", access_scope: "Read only" }, rubric: { version: "fixture-v1", moderate_at: 25, high_at: 60, criteria: [{ id: "assurance", weight: 100, evidence: "independent_report", requirement: "Independent report covers the service" }] } },
+      assessment: { criteria: [{ id: "assurance", status: "unknown", reason: hostile, evidence_ids: ["doc"] }] },
+      gaps: [{ code: "independent_report_missing", detail: "A public vendor claim does not establish independent assurance", evidence_ids: ["doc"] }],
+    },
+  } };
+  const { get } = harness({
+    "/v1/investigations/vendor-score": { body: { work_package: report } },
+    "/v1/investigations/vendor-score/timeline": { body: { events: [{ type: "evidence.collected", actor_type: "CONNECTOR", actor_id: "research", data: { evidence_id: "doc", claim_type: "vendor_claim" } }] } },
+  });
+  openInvestigation(get, "vendor-score");
+  await settle();
+  const text = textOf(get("dialog-body"));
+  for (const expected of ["Go · weighted-v1", "stored-rubric-digest", "fixture-v1", "Internal collaboration", "Read only", "Withheld", "independent_report", "Criterion assessments", "Evidence gaps", "Vendor claims", hostile]) assert.ok(text.includes(expected), `Missing ${expected}`);
+  assert.ok(!descendants(get("dialog-body")).some((e) => e.tagName === "img"));
+});
+
+test("a complete zero-point Go assessment shows zero and preserves its policy thresholds", async () => {
+  const { get } = harness({ "/v1/investigations/vendor-zero": { body: { work_package: { version: 1, summary: "Review", risk_assessment: { rating: "LOW", scoring: { method: "weighted-v1", score: 0, context: { rubric: { version: "fixture-v1", moderate_at: 25, high_at: 60 } }, assessment: { criteria: [] }, gaps: [] } } } } } });
+  openInvestigation(get, "vendor-zero");
+  await settle();
+  const text = textOf(get("dialog-body"));
+  assert.ok(text.includes("0/100"));
+  assert.ok(text.includes("MODERATE at 25, HIGH at 60"));
+  assert.ok(text.includes("No rubric gaps recorded"));
+});
+
+test("historical model-assigned vendor ratings remain readable and explicitly labelled", async () => {
+  const { get } = harness({ "/v1/investigations/vendor-legacy": { body: { work_package: { version: 1, summary: "Historical review", risk_assessment: { rating: "MODERATE", rationale: "Legacy interpretation", evidence_ids: [] } } } } });
+  openInvestigation(get, "vendor-legacy");
+  await settle();
+  assert.match(textOf(get("dialog-body")), /Legacy model-assigned rating/);
+});

@@ -90,10 +90,48 @@ claim wording and risk rationale before sending a report.
 Jira delivery is not exactly once at the remote API boundary. Ambiguous POST
 outcomes and expired running sends stop for reconciliation; only explicit
 rate-limit responses are automatically retried. A manual reconciliation/resend
-interface is still needed.
+interface was subsequently implemented with fixture coverage; see
+[delivery recovery](development.md#jira-delivery-recovery). It was not part of
+this October 9 live simulation.
 
 Research currently supports public text/HTML/Markdown and configured local
 Markdown/plain-text files. PDF parsing, authenticated vendor portals, arbitrary
 search, real Jira permissions/webhook wiring, and real Google Workspace
 execution were not tested. The next batches are recorded in
 [the pilot plan](pilot-plan.md#follow-on-batch).
+
+## Delivery recovery verification (October 17, 2026)
+
+The recovery follow-up passed `go test -race -count=1 ./...` with disposable
+PostgreSQL 17 and migrations 1–10, `go vet ./...`, both binary builds, and all
+25 frontend tests. Additional integration coverage verifies definite-rejection
+recovery and transactional retry history. Fixtures cover stale revisions,
+concurrent resend/claim decisions, verification racing a resend, requester-reply
+supersession, restart continuity, audit rollback, legacy migration behavior,
+comment author/body/time/correlation mismatches, and bounded failure handling.
+
+Headless renders of the shipped console using service-response fixtures showed
+no horizontal document or dialog overflow at widths 390 and 1200. Interactive
+browser automation was unavailable during this check. No real Jira tenant or
+Google mutations were involved; actual Jira property round-tripping and bot
+permissions remain pilot validation work.
+
+
+## Deterministic vendor scoring verification (October 17, 2026)
+
+The vendor-scoring follow-up passed the full Go race suite with disposable
+PostgreSQL 17 and migrations 1–10, vet, both binary builds, and all 28 frontend
+tests. Twelve synthetic evaluation fixtures cover rating boundaries, incomplete
+scope, unknown assessments, failed/truncated/omitted sources, historical evidence,
+and vendor claims that cannot satisfy independent assurance requirements.
+
+Provider tests cover structured and ordinary JSON contracts; database/API tests
+verify current evidence, frozen rubric authority, report round-tripping, source
+claim labels, SYSTEM scoring audit events, and the computed requester draft.
+Desktop (1200px) and mobile (390px) headless renders of the shipped console with
+synthetic fixtures showed no horizontal document or dialog overflow.
+
+This verifies implementation behavior, not expert calibration or live-model
+semantic accuracy. The example rubric and synthetic expected assessments still
+need human review against actual deployment requirements. No Workspace tenant,
+Google writes, private vendor artifacts, or paid model calls were needed.

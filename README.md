@@ -34,7 +34,10 @@ so a service restart does not erase the conversation.
 
 A request such as “Do a vendor review on Tailscale and give an executive summary
 plus a risk rating” produces a structured report with a provisional rating,
-rationale, and cited sources. Each citation shows the source URL, observation
+rationale, and cited sources. Go computes new ratings from an administrator-owned
+rubric and declared deployment context; missing evidence produces UNKNOWN with
+visible gaps. The report retains the rubric snapshot and model-interpreted
+criteria. Each citation shows the source URL, observation
 time, content hash, and whether the excerpt was truncated.
 
 Sources come from an administrator-owned catalog. Vendor documents remain
@@ -57,7 +60,10 @@ specialist can then use a configured runbook to return cited recommended steps.
 In **SHADOW**, questions and results stay as operator-visible drafts. In
 **REVIEW**, edit the message, supply operator identity, and choose **Approve and
 send to Jira**. The exact approved text enters the durable delivery outbox;
-review identity and delivery outcomes remain visible in the case.
+review identity and delivery outcomes remain visible in the case. Uncertain sends
+can be reconciled by verifying a Jira comment ID. Resending the approved message
+requires an operator reason and explicit acknowledgement of duplicate risk;
+superseded messages cannot be resent.
 
 ![Original investigation draft beside the edited message and Approve and send to Jira control](docs/screenshots/message-review.png)
 
@@ -100,7 +106,7 @@ go run ./cmd/wardstone
 ```
 
 Open `http://127.0.0.1:8080/admin/` and connect with the configured operator token.
-The runtime requires migrations 1–9; Compose applies them when creating a fresh
+The runtime requires migrations 1–10; Compose applies them when creating a fresh
 database volume. Set `WARDSTONE_AI_KEY` for the OpenRouter shortcut, or configure
 an explicit compatible model endpoint. Jira and Google connectors can be added
 independently.

@@ -77,6 +77,33 @@ func TestCaseMemoryMigrationPreservesUnknownLegacyProvenance(t *testing.T) {
 	}
 	apply("000008_case_memory_reports.sql")
 	apply("000009_reviewed_messages.sql")
+	// Upgrade old delivery states without guessing whether remote POSTs succeeded.
+	for _, failure := range []string{"draft_superseded", "delivery_outcome_unknown", "Jira comment API returned 403 Forbidden"} {
+		mid := domain.NewMessageID()
+		if _, err := pool.Exec(ctx, `INSERT INTO case_messages(id,investigation_id,source,external_id,direction,body,created_at) VALUES($1,$2,'jira',$1,'OUTBOUND','Legacy draft',$3)`, mid, id, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO message_deliveries(id,message_id,status,last_error,available_at,created_at) VALUES($1,$2,'DEAD',$3,$4,$4)`, domain.NewDeliveryID(), mid, failure, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apply("000010_delivery_recovery.sql")
+	for _, failure := range []string{"draft_superseded", "delivery_outcome_unknown", "Jira comment API returned 403 Forbidden"} {
+		var status domain.DeliveryStatus
+		var revision int64
+		var correlation bool
+		if err := pool.QueryRow(ctx, `SELECT status,revision,correlation_required FROM message_deliveries WHERE last_error=$1`, failure).Scan(&status, &revision, &correlation); err != nil {
+			t.Fatal(err)
+		}
+		want := domain.DeliveryUncertain
+		if failure == "draft_superseded" {
+			want = domain.DeliverySuperseded
+		}
+		if status != want || revision != 0 || correlation {
+			t.Fatalf("legacy delivery %q: status=%s revision=%d correlation=%v", failure, status, revision, correlation)
+		}
+	}
+
 	if err := CheckSchema(ctx, pool); err != nil {
 		t.Fatalf("upgraded schema: %v", err)
 	}

@@ -53,10 +53,12 @@ const (
 type DeliveryStatus string
 
 const (
-	DeliveryPending DeliveryStatus = "PENDING"
-	DeliveryRunning DeliveryStatus = "RUNNING"
-	DeliverySent    DeliveryStatus = "SENT"
-	DeliveryDead    DeliveryStatus = "DEAD"
+	DeliveryPending    DeliveryStatus = "PENDING"
+	DeliveryRunning    DeliveryStatus = "RUNNING"
+	DeliverySent       DeliveryStatus = "SENT"
+	DeliveryFailed     DeliveryStatus = "FAILED"
+	DeliveryUncertain  DeliveryStatus = "NEEDS_RECONCILIATION"
+	DeliverySuperseded DeliveryStatus = "SUPERSEDED"
 )
 
 type PolicyDecision string
@@ -219,21 +221,23 @@ type CaseMessage struct {
 }
 
 type MessageDelivery struct {
-	ID             DeliveryID     `json:"id"`
-	MessageID      MessageID      `json:"message_id"`
-	Status         DeliveryStatus `json:"status"`
-	Attempt        int            `json:"attempt"`
-	RemoteID       string         `json:"remote_id,omitempty"`
-	LastError      string         `json:"last_error,omitempty"`
-	AvailableAt    time.Time      `json:"available_at"`
-	LeaseOwner     string         `json:"lease_owner,omitempty"`
-	LeaseExpiresAt *time.Time     `json:"lease_expires_at,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
-	DeliveredAt    *time.Time     `json:"delivered_at,omitempty"`
-	ReviewedBody   string         `json:"reviewed_body,omitempty"`
-	ReviewedBy     string         `json:"reviewed_by,omitempty"`
-	ReviewedAt     *time.Time     `json:"reviewed_at,omitempty"`
-	DraftDigest    string         `json:"draft_digest,omitempty"`
+	ID                  DeliveryID     `json:"id"`
+	Revision            int64          `json:"revision"`
+	CorrelationRequired bool           `json:"correlation_required"`
+	MessageID           MessageID      `json:"message_id"`
+	Status              DeliveryStatus `json:"status"`
+	Attempt             int            `json:"attempt"`
+	RemoteID            string         `json:"remote_id,omitempty"`
+	LastError           string         `json:"last_error,omitempty"`
+	AvailableAt         time.Time      `json:"available_at"`
+	LeaseOwner          string         `json:"lease_owner,omitempty"`
+	LeaseExpiresAt      *time.Time     `json:"lease_expires_at,omitempty"`
+	CreatedAt           time.Time      `json:"created_at"`
+	DeliveredAt         *time.Time     `json:"delivered_at,omitempty"`
+	ReviewedBody        string         `json:"reviewed_body,omitempty"`
+	ReviewedBy          string         `json:"reviewed_by,omitempty"`
+	ReviewedAt          *time.Time     `json:"reviewed_at,omitempty"`
+	DraftDigest         string         `json:"draft_digest,omitempty"`
 }
 
 type Evidence struct {

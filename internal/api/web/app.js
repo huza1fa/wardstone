@@ -271,6 +271,7 @@
         const description = describeRoutingEvent(event);
         if (description) entry.append(node("p", { text: description }));
         if (event.type === "evidence.collected") entry.append(evidenceCitation(event.data?.evidence_id, evidence));
+        if (["vendor.risk_scored", "requester.send_started", "requester.send_retried", "requester.message_failed", "requester.message_delivered", "requester.delivery_checked", "requester.delivery_reconciled", "requester.resend_requested"].includes(event.type)) entry.append(node("pre", { className: "literal-json", text: JSON.stringify(event.data || {}, null, 2) }));
         if (event.type === "action.proposed") entry.append(node("pre", { className: "literal-json", text: JSON.stringify(event.data?.arguments ?? null, null, 2) }));
         timeline.append(entry);
       }
@@ -324,8 +325,30 @@
     if (report.risk_assessment) {
       card.append(node("h4", { text: "Provisional vendor risk" }), detailField("Risk rating", report.risk_assessment.rating), node("p", { className: "detail-copy", text: report.risk_assessment.rationale }));
       for (const id of report.risk_assessment.evidence_ids || []) card.append(evidenceCitation(id, evidence));
+      const scoring = report.risk_assessment.scoring;
+      if (scoring) {
+        card.append(detailField("Scoring method", "Go · " + scoring.method), detailField("Rubric", scoring.context?.rubric?.version || "Not configured"), detailField("Rubric SHA-256", scoring.rubric_digest), detailField("Risk points", Number.isInteger(scoring.score) ? `${scoring.score}/100` : "Withheld — incomplete review"));
+        const context = scoring.context || {};
+        card.append(node("h4", { text: "Administrator deployment context" }), detailField("Vendor", context.vendor), detailField("Use case", context.deployment?.use_case), detailField("Data classification", context.deployment?.data_classification), detailField("Access scope", context.deployment?.access_scope));
+        if (context.rubric) card.append(node("p", { className: "detail-note", text: `Thresholds: MODERATE at ${context.rubric.moderate_at}, HIGH at ${context.rubric.high_at}. Met adds no risk points, partial adds half the weight, and unmet adds the full weight. Any evidence gap withholds the score.` }));
+        card.append(node("h4", { text: "Criterion assessments — model interpretation" }));
+        for (const assessment of scoring.assessment?.criteria || []) {
+          const criterion = context.rubric?.criteria?.find((c) => c.id === assessment.id);
+          const item = node("article", { className: "action-detail" }, [node("h4", { text: assessment.id }), detailField("Status", assessment.status), detailField("Weight", `${criterion?.weight ?? "Unknown"}/100`), detailField("Required evidence", criterion?.evidence), node("p", { className: "detail-copy", text: criterion?.requirement || "" }), node("p", { className: "detail-copy", text: assessment.reason })]);
+          for (const id of assessment.evidence_ids || []) item.append(evidenceCitation(id, evidence));
+          card.append(item);
+        }
+        card.append(node("h4", { text: "Evidence gaps" }));
+        for (const gap of scoring.gaps || []) {
+          const item = node("article", { className: "action-detail" }, [node("strong", { text: humanize(gap.code) }), node("p", { className: "detail-copy", text: gap.detail })]);
+          for (const id of gap.evidence_ids || []) item.append(evidenceCitation(id, evidence));
+          card.append(item);
+        }
+        if (!scoring.gaps?.length) card.append(node("p", { className: "detail-copy", text: "No rubric gaps recorded. The assessment still requires operator review." }));
+        card.append(node("p", { className: "detail-note", text: "Go applies the stored rubric to cited model interpretations. This provisional rating does not independently verify controls or approve the vendor." }));
+      } else card.append(node("p", { className: "detail-note", text: "Legacy model-assigned rating. No deterministic rubric was recorded for this report." }));
     }
-    for (const [kind, label] of [["verified", "Verified findings"], ["assumption", "Assumptions"]]) {
+    for (const [kind, label] of [["verified", report.risk_assessment?.scoring ? "Evidence-backed findings" : "Verified findings"], ["vendor_claim", "Vendor claims — not independently verified"], ["assumption", "Assumptions"]]) {
       const findings = (report.findings || []).filter((finding) => finding.kind === kind);
       const list = node("ul", { className: `finding-list ${kind}` });
       for (const finding of findings) {
@@ -366,15 +389,23 @@
 
   function conversationCard(payload, investigationID, status) {
     const card = node("section", { className: "conversation-card" }, [node("h3", { text: "Requester conversation" }), node("p", { className: "detail-note", text: "Outbound messages are drafts in SHADOW mode. In REVIEW mode, an operator approves the exact message to send. Delivery status is recorded separately." })]);
+    const refresh = node("button", { type: "button", className: "button button-secondary", text: "Refresh delivery status" });
+    refresh.addEventListener("click", () => showInvestigation(investigationID));
+    card.append(refresh);
     if (payload.error) card.append(node("p", { className: "detail-copy", text: payload.error }));
     else if (!payload.messages?.length) card.append(node("p", { className: "detail-copy", text: "No messages recorded." }));
     for (const message of payload.messages || []) {
       const article = node("article", { className: "message-detail" }, [node("h4", { text: message.direction === "OUTBOUND" ? "Wardstone outbound / draft" : message.direction === "INBOUND" ? "Requester reply" : "Message" }), node("small", { className: "detail-copy", text: `${formatDate(message.created_at)} · ${message.author || "Unknown author"} · ${message.source || "Unknown source"}` }), node("p", { className: "detail-copy", text: message.body })]);
       const delivery = (payload.deliveries || []).find((item) => item.message_id === message.id);
       if (delivery) {
-        article.append(detailField("Delivery", delivery.status), detailField("Reviewed by", delivery.reviewed_by), detailField("Remote comment", delivery.remote_id));
+        article.append(detailField("Delivery", humanize(delivery.status)), detailField("Send attempts", String(delivery.attempt || 0)), detailField("Reviewed by", delivery.reviewed_by), detailField("Remote comment", delivery.remote_id));
         if (delivery.reviewed_body) article.append(node("h4", { text: "Approved message" }), node("p", { className: "detail-copy", text: delivery.reviewed_body }));
-        if (delivery.last_error) article.append(node("p", { className: "form-error", text: delivery.last_error }));
+        if (delivery.last_error) article.append(node("p", { className: "detail-note", text: `Last send error: ${delivery.last_error}` }));
+        if (delivery.status === "SUPERSEDED") article.append(node("p", { className: "detail-note", text: "A newer message or case state superseded this draft before sending. It cannot be resent." }));
+        if (payload.recovery_enabled && delivery.reviewed_at && ["NEEDS_RECONCILIATION", "FAILED"].includes(delivery.status)) {
+          const canResend = message.id === payload.messages.at(-1)?.id && ["WAITING_ON_REQUESTER", "COMPLETED"].includes(status);
+          article.append(recoveryForm(investigationID, message.id, delivery, canResend));
+        }
       } else if (payload.review_enabled && message.direction === "OUTBOUND" && message.id === payload.messages.at(-1)?.id && ["WAITING_ON_REQUESTER", "COMPLETED"].includes(status)) {
         const body = node("textarea", { id: `review-body-${message.id}`, rows: 6, maxLength: 16000, required: true, value: message.body });
         const actor = node("input", { id: `review-actor-${message.id}`, required: true, maxLength: 256, value: state.actor, placeholder: "you@example.com" });
@@ -401,6 +432,64 @@
       card.append(article);
     }
     return card;
+  }
+
+  function recoveryForm(investigationID, messageID, delivery, canResend) {
+    const revision = detailRevision;
+    const actor = node("input", { id: `recovery-actor-${messageID}`, required: true, maxLength: 256, value: state.actor, placeholder: "you@example.com" });
+    const reason = node("textarea", { id: `recovery-reason-${messageID}`, required: true, rows: 2, maxLength: 2000 });
+    const remote = node("input", { id: `recovery-comment-${messageID}`, maxLength: 128, placeholder: "Jira comment ID" });
+    const verify = node("button", { type: "submit", className: "button button-secondary", text: "Verify Jira comment" });
+    const acknowledge = node("input", { id: `recovery-risk-${messageID}`, type: "checkbox" });
+    const resend = node("button", { type: "button", className: "button", text: "Resend approved message" });
+    const error = node("p", { className: "form-error", role: "alert" });
+    const form = node("form", { className: "message-recovery" }, [
+      node("h4", { text: "Recover Jira delivery" }),
+      node("p", { className: "detail-note", text: "Check Jira for the approved message and enter its comment ID. Wardstone verifies the issue, bot author, creation time, and exact message. A missing or mismatched comment leaves delivery uncertain." }),
+      node("label", { htmlFor: actor.id, text: "Operator identity" }), actor,
+      node("label", { htmlFor: reason.id, text: "Reason for recovery" }), reason,
+      node("label", { htmlFor: remote.id, text: "Jira comment ID to verify" }), remote, verify,
+    ]);
+    if (canResend) form.append(node("label", { htmlFor: acknowledge.id, className: "recovery-risk" }, [acknowledge, node("span", { text: "I checked Jira and accept that resending may create a duplicate comment." })]), resend);
+    else form.append(node("p", { className: "detail-note", text: "This message has been superseded. You can verify a past delivery, but cannot resend it." }));
+    form.append(error);
+    let busy = false;
+    async function recover(action) {
+      if (busy) return;
+      error.textContent = "";
+      if (!actor.value.trim() || !reason.value.trim()) { error.textContent = "Enter your identity and a reason for recovery."; return; }
+      if (action === "reconcile" && !/^[A-Za-z0-9_-]{1,128}$/.test(remote.value.trim())) { error.textContent = "Enter the Jira comment ID to verify."; return; }
+      if (action === "resend" && !acknowledge.checked) { error.textContent = "Acknowledge the risk of a duplicate comment before resending."; return; }
+      const token = state.token;
+      busy = true;
+      verify.disabled = resend.disabled = true;
+      try {
+        const request = { action, actor: actor.value.trim(), reason: reason.value.trim(), revision: delivery.revision };
+        if (action === "reconcile") request.remote_id = remote.value.trim();
+        else request.acknowledge_duplicate_risk = true;
+        const result = await api(`/v1/investigations/${encodeURIComponent(investigationID)}/messages/${encodeURIComponent(messageID)}/recovery`, { method: "POST", body: JSON.stringify(request) });
+        if (state.token !== token || revision !== detailRevision || !byId("investigation-dialog").open) return;
+        state.actor = actor.value.trim();
+        sessionStorage.setItem("wardstone.operatorActor", state.actor);
+        const outcomes = {
+          verified: "Jira comment verified. Delivery recorded as sent.",
+          resend_queued: "The exact approved message is queued for resend.",
+          comment_not_found: "Jira comment not found. Delivery remains unresolved; no message was sent.",
+          comment_mismatch: "Jira comment did not match. Delivery remains unresolved; no message was sent.",
+          jira_verification_unavailable: "Jira verification unavailable. Delivery remains unresolved; no message was sent.",
+        };
+        await showInvestigation(investigationID);
+        if (state.token === token && detailRevision === revision + 1) {
+          const notice = node("p", { className: "detail-note", role: "status", text: outcomes[result.outcome] || "Delivery recovery recorded." });
+          byId("dialog-body").append(notice);
+          showToast(notice.textContent);
+        }
+      } catch (failure) { if (state.token === token && revision === detailRevision) error.textContent = failure.message; }
+      finally { busy = false; verify.disabled = resend.disabled = false; }
+    }
+    form.addEventListener("submit", (event) => { event.preventDefault(); return recover("reconcile"); });
+    resend.addEventListener("click", () => recover("resend"));
+    return form;
   }
 
   function detailField(label, value) {

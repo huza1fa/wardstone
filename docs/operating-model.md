@@ -135,3 +135,17 @@ the result was verified.
 The long-term goal is not universal autonomous IT. It is to move the
 administrator from processing every interruption to supervising exceptions and
 exercising judgment where it is genuinely required.
+
+
+## Deterministic vendor scoring
+
+For new vendor reviews, Go computes the provisional rating from an
+administrator-owned, versioned rubric. The model supplies cited criterion
+interpretations, not the overall rating. The report preserves policy thresholds,
+weights, intended deployment, source designations, evidence gaps, and the scoring
+result. Missing requirements or evidence produce UNKNOWN rather than implicit
+low risk. Vendor statements remain vendor claims; administrator-designated
+independent reports are labelled as such without claiming that collection alone
+verifies their authenticity. Deterministic scoring makes a given set of inputs
+repeatable; it does not establish the semantic accuracy of model judgments or
+approve a vendor. Reviewed requester delivery remains the human decision boundary.

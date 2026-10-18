@@ -11,6 +11,7 @@ import (
 	"net/url"
 
 	"github.com/wardstone-project/wardstone/internal/connectors"
+	"github.com/wardstone-project/wardstone/internal/delivery"
 	"github.com/wardstone-project/wardstone/internal/domain"
 )
 
@@ -67,21 +68,25 @@ func (c *Client) Probe(ctx context.Context) error {
 
 func (c *Client) SendRequesterMessage(ctx context.Context, ticket domain.Ticket, message domain.CaseMessage) (string, error) {
 	if ticket.Source != Name || ticket.ExternalID == "" || message.Direction != domain.MessageOutbound || len(message.Body) == 0 || len(message.Body) > maxCommentBody {
-		return "", sendError{err: errors.New("invalid Jira requester message"), retryable: false}
+		return "", sendError{err: errors.New("invalid Jira requester message"), retryable: false, definite: true}
 	}
-	payload, err := json.Marshal(map[string]any{"body": map[string]any{
+	comment := map[string]any{"body": map[string]any{
 		"type": "doc", "version": 1,
 		"content": []map[string]any{{"type": "paragraph", "content": []map[string]string{{"type": "text", "text": message.Body}}}},
-	}})
+	}}
+	if message.ID != "" {
+		comment["properties"] = []any{map[string]any{"key": "wardstone.message", "value": map[string]string{"message_id": string(message.ID), "body_sha256": delivery.DraftDigest(message.Body)}}}
+	}
+	payload, err := json.Marshal(comment)
 	if err != nil {
-		return "", sendError{err: fmt.Errorf("encode Jira comment: %w", err), retryable: false}
+		return "", sendError{err: fmt.Errorf("encode Jira comment: %w", err), retryable: false, definite: true}
 	}
 	endpoint := *c.baseURL
 	endpoint.Path = c.baseURL.Path + "/rest/api/3/issue/" + ticket.ExternalID + "/comment"
 	endpoint.RawPath = c.baseURL.EscapedPath() + "/rest/api/3/issue/" + url.PathEscape(ticket.ExternalID) + "/comment"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(payload))
 	if err != nil {
-		return "", sendError{err: fmt.Errorf("build Jira comment request: %w", err), retryable: false}
+		return "", sendError{err: fmt.Errorf("build Jira comment request: %w", err), retryable: false, definite: true}
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
@@ -93,7 +98,7 @@ func (c *Client) SendRequesterMessage(ctx context.Context, ticket domain.Ticket,
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		return "", sendError{err: fmt.Errorf("Jira comment API returned %s", response.Status), retryable: response.StatusCode == http.StatusTooManyRequests}
+		return "", sendError{err: fmt.Errorf("Jira comment API returned %s", response.Status), retryable: response.StatusCode == http.StatusTooManyRequests, definite: response.StatusCode >= 400 && response.StatusCode < 500 && response.StatusCode != http.StatusRequestTimeout}
 	}
 	var result struct {
 		ID string `json:"id"`
@@ -110,8 +115,11 @@ func (c *Client) SendRequesterMessage(ctx context.Context, ticket domain.Ticket,
 type sendError struct {
 	err       error
 	retryable bool
+	definite  bool
 }
 
 func (e sendError) Error() string   { return e.err.Error() }
 func (e sendError) Unwrap() error   { return e.err }
 func (e sendError) Retryable() bool { return e.retryable }
+
+func (e sendError) OutcomeUnknown() bool { return !e.definite }

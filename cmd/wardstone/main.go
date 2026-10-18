@@ -130,6 +130,7 @@ func run(logger *slog.Logger) error {
 		modelProvider = model
 	}
 	service, err := investigations.NewService(store, collectors, modelProvider, registry, policyEvaluator, investigations.Config{
+		VendorRisk:               settings.VendorRisk,
 		MaxConcurrentCollectors:  settings.MaxCollectors,
 		CollectorTimeout:         settings.CollectorTimeout,
 		ModelTimeout:             settings.ModelTimeout,
@@ -173,6 +174,13 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	options := []api.Option{api.WithAdmin(store, approvalService, settings.Mode), api.WithSetup(setupService), api.WithRoutingPreview(service), api.WithMessageReviews(store, deliveryDispatcher != nil)}
+	if jiraClient != nil && deliveryDispatcher != nil {
+		recovery, err := delivery.NewRecoveryService(store, jiraClient)
+		if err != nil {
+			return err
+		}
+		options = append(options, api.WithMessageRecovery(recovery))
+	}
 	var intake api.InvestigationService
 	if model != nil {
 		intake = service

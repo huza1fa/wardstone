@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -64,10 +65,15 @@ func TestStructuredWireRejectsInvalidAndDuplicateValues(t *testing.T) {
 		t.Fatal("missing configured handoff shape")
 	}
 	report := properties[1].(map[string]any)["properties"].(map[string]any)["work_package"].(map[string]any)["properties"].(map[string]any)
-	rating := report["risk_assessment"].(map[string]any)["properties"].(map[string]any)["rating"].(map[string]any)["enum"].([]string)
-	if len(rating) != 1 || rating[0] != "UNKNOWN" {
-		t.Fatal("schema permitted known risk without documents")
+	if report["risk_assessment"] != nil {
+		t.Fatal("schema offered a model-generated rating")
 	}
+	final := properties[1].(map[string]any)["properties"].(map[string]any)
+	assessment := final["vendor_assessment"].(map[string]any)["properties"].(map[string]any)["criteria"].(map[string]any)
+	if assessment["maxItems"] != 0 {
+		t.Fatal("unconfigured rubric permitted criterion assessments")
+	}
+
 }
 
 func TestSchemaConstrainsKnownWorkflowBoundaries(t *testing.T) {
@@ -117,10 +123,61 @@ func TestStructuredCitationsUseOnlySuppliedEvidenceIDs(t *testing.T) {
 	variants := diagnosisSchema(request)["properties"].(map[string]any)["result"].(map[string]any)["anyOf"].([]any)
 	report := variants[1].(map[string]any)["properties"].(map[string]any)["work_package"].(map[string]any)["properties"].(map[string]any)
 	finding := report["findings"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
-	for _, citations := range []any{finding["evidence_ids"], report["risk_assessment"].(map[string]any)["properties"].(map[string]any)["evidence_ids"]} {
+	assessment := variants[1].(map[string]any)["properties"].(map[string]any)["vendor_assessment"].(map[string]any)["properties"].(map[string]any)["criteria"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+	for _, citations := range []any{finding["evidence_ids"], assessment["evidence_ids"]} {
 		ids := citations.(map[string]any)["items"].(map[string]any)["enum"].([]domain.EvidenceID)
 		if len(ids) != 2 || ids[0] != "evd_context" || ids[1] != "evd_document" {
 			t.Fatalf("citation schema is not bounded to supplied evidence: %v", ids)
+		}
+	}
+}
+
+func TestVendorSchemaOffersAssessmentsWithoutRatingAuthority(t *testing.T) {
+	request := agent.Request{Specialist: "vendor_review", VendorReview: &domain.VendorReviewContext{Vendor: "acme", Rubric: &domain.VendorRubric{Version: "fixture-v1", ModerateAt: 25, HighAt: 60, Criteria: []domain.VendorCriterion{{ID: "identity", Requirement: "Identity controls", Weight: 100, Evidence: "vendor_claim"}}}}}
+	variants := diagnosisSchema(request)["properties"].(map[string]any)["result"].(map[string]any)["anyOf"].([]any)
+	final := variants[1].(map[string]any)["properties"].(map[string]any)
+	report := final["work_package"].(map[string]any)["properties"].(map[string]any)
+	if report["risk_assessment"] != nil {
+		t.Fatal("model can choose overall risk")
+	}
+	criteria := final["vendor_assessment"].(map[string]any)["properties"].(map[string]any)["criteria"].(map[string]any)
+	fields := criteria["items"].(map[string]any)["properties"].(map[string]any)
+	ids := fields["id"].(map[string]any)["enum"].([]string)
+	if criteria["maxItems"] != 1 || len(ids) != 1 || ids[0] != "identity" || fields["score"] != nil {
+		t.Fatal("assessment schema is not bounded to configured criteria")
+	}
+	for _, structured := range []bool{false, true} {
+		for _, scenario := range []string{"valid", "overall rating", "duplicate ID", "question mixed with assessment"} {
+			t.Run(fmt.Sprintf("structured=%v/%s", structured, scenario), func(t *testing.T) {
+				content := `{"work_package":{"version":1,"summary":"Source review"},"vendor_assessment":{"criteria":[{"id":"identity","status":"unknown","reason":"Missing evidence","evidence_ids":[]}]}}`
+				switch scenario {
+				case "overall rating":
+					content = `{"work_package":{"version":1,"summary":"Review","risk_assessment":{"rating":"UNKNOWN","rationale":"No evidence","evidence_ids":[]}},"vendor_assessment":{"criteria":[]}}`
+				case "duplicate ID":
+					content = `{"work_package":{"version":1,"summary":"Review"},"vendor_assessment":{"criteria":[{"id":"identity","status":"unknown","reason":"Missing","evidence_ids":[]},{"id":"identity","status":"unknown","reason":"Duplicate","evidence_ids":[]}]}}`
+				case "question mixed with assessment":
+					content = `{"follow_up_question":"Which vendor?","vendor_assessment":{"criteria":[]}}`
+				}
+				if structured {
+					content = `{"result":` + content + `}`
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": content}}}})
+				}))
+				defer server.Close()
+				p, err := NewOpenAICompatible(server.URL, "", "test", server.Client(), Options{StructuredOutput: structured})
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := p.Diagnose(context.Background(), request)
+				if scenario == "valid" {
+					if err != nil || result.VendorAssessment == nil || result.WorkPackage.RiskAssessment != nil {
+						t.Fatalf("result=%+v err=%v", result, err)
+					}
+				} else if err == nil {
+					t.Fatal("unsafe vendor result accepted")
+				}
+			})
 		}
 	}
 }

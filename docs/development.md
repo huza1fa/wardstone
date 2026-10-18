@@ -17,20 +17,56 @@ explicitly, for example:
 
 ```sh
 docker compose exec -T postgres psql -U wardstone_admin -d wardstone \
-  < migrations/000009_reviewed_messages.sql
+  < migrations/000010_delivery_recovery.sql
 ```
 
 Never reapply a migration whose version already appears in
 `schema_migrations`.
 
-The current runtime requires schema version 9. Apply any missing migrations in
+The current runtime requires schema version 10. Apply any missing migrations in
 numeric order. Migration 7 preserves old cases without inventing provenance;
 new dispatches record their original routing decision. Migration 8 adds evidence
 collector capability provenance, a newest-first case/capability index, and an
 immutable completion-time `work_package`. Existing evidence keeps an empty
 capability and is hidden from model case memory; existing investigations may
 have no report. Migration 9 adds immutable exact-text message reviews; legacy
-delivery rows retain no review and are excluded from the REVIEW dispatcher.
+delivery rows retain no review and are excluded from the REVIEW dispatcher. Migration
+10 distinguishes failed, uncertain, and superseded deliveries and adds recovery
+revisions and comment-correlation requirements. Old `DEAD` rows become uncertain
+unless their recorded error identifies a superseded draft. Original errors and
+reviews remain intact.
+
+## Google identity test tenant
+
+For the bounded user/group membership pilot, start with **Cloud Identity Free**.
+Google lists directory management, organizational groups, and API automation in
+the free edition, with 50 user licenses by default. This is a real managed
+identity tenant, without Workspace Gmail hosting; it is useful for our identity
+tests rather than a full Workspace application test environment. See Google's
+[edition comparison](https://docs.cloud.google.com/identity/docs/editions),
+[pricing](https://cloud.google.com/identity/pricing), and
+[Free signup instructions](https://docs.cloud.google.com/identity/docs/how-to/set-up-cloud-identity-admin).
+
+Use a dedicated domain you control and verify it through DNS. Domain registration
+is a separate cost if you do not already own a suitable domain. Google also notes
+that administrator notifications require external email hosting or forwarding.
+Create one administrator, two synthetic users, and a test group. Enable the Admin
+SDK API in a dedicated Google Cloud project, obtain an appropriately scoped admin
+OAuth token, and first verify Wardstone's user, group, and direct-membership reads.
+The existing connector uses the Admin SDK Directory API; confirm its scopes and
+admin permissions against the tenant before proceeding to a write pilot.
+
+The current runtime still denies Google mutations in SHADOW and REVIEW. Only
+after the approved executor is implemented should the pilot add a synthetic user
+to the test group and independently read membership to verify the result. The
+Directory API's [membership insertion reference](https://developers.google.com/workspace/admin/directory/reference/rest/v1/members/insert)
+documents the write operation and required scopes. Tenant provisioning and live
+API compatibility have not yet been verified for this project.
+
+If full Workspace apps are needed later, Google offers a
+[14-day Workspace trial](https://support.google.com/a/answer/6388094).
+That trial requires payment setup and can begin charging after the trial;
+Cloud Identity Free is the better starting point for an ongoing identity lab.
 
 ## Specialist profiles
 
@@ -181,8 +217,10 @@ Examples of supported Jira intake payloads:
 The example routes these structured request types directly. Prose-only requests
 use the intent fallback and may need a selector clarification. Vendor reports
 include `risk_assessment.rating` (`LOW`, `MODERATE`, `HIGH`, `UNKNOWN`), rationale,
-and citations. Treat the rating as provisional and vendor documents as claims.
-Missing private audit reports and deployment requirements remain unknowns.
+and citations. Go now computes the rating from the configured rubric and cited
+criterion assessments. Missing rubric, deployment context, or required evidence
+produces UNKNOWN with no numeric score. See [vendor risk scoring](#vendor-risk-scoring).
+Public vendor statements remain claims; private reports are not inferred.
 
 Source documents are limited to 512 KiB downloads and 24 KiB text excerpts;
 truncation, timestamps, content hashes, and source URLs are recorded. The current
@@ -436,3 +474,189 @@ require a final `y` confirmation.
 The terminal console polls compact admin investigation summaries; it does not
 load full investigation reports or conversation ledgers. Use the web detail
 view or authenticated detail API to review the work package and exact proposals.
+
+
+## Jira delivery recovery
+
+With Jira configured in REVIEW mode, open a case's **Requester conversation**.
+Stored conversations and recovery remain available without a configured model;
+new investigations and requester-reply processing still follow model availability.
+`NEEDS_RECONCILIATION` means a send may have reached Jira. `FAILED` means the
+connector reported a definite rejection. `SUPERSEDED` means the dispatcher
+suppressed a queued message after a newer message or case state replaced it.
+Use **Refresh delivery status** to reload the current state and attempt count.
+
+To reconcile an uncertain or failed delivery, inspect the original Jira issue,
+enter the matching comment's ID, your operator identity, and a reason, then
+choose **Verify Jira comment**. Wardstone reads its Jira account identity and
+that one issue-scoped comment. It requires the bot author, exact approved ADF
+body, and a creation time at or after the delivery's creation. New sends also
+carry a `wardstone.message` property containing the message ID and approved-text
+SHA-256; verification requires that property when the dispatcher recorded that
+it would be sent. Legacy sends can be checked without the property. A mismatched
+property is always rejected. A comment already reconciled to another message in
+the same investigation cannot be reused.
+
+Only a positive verification records `SENT` and a remote comment ID. A missing
+comment, forbidden read, timeout, malformed response, changed body, or mismatch
+leaves delivery unresolved. Reads are bounded to five seconds and one MiB per
+response, reject redirects, and never return upstream bodies. Verification is
+strict: Jira-side formatting edits or a changed bot account can prevent a match.
+Verification records the confirmation time as `delivered_at`; it does not infer
+an exact historical send time. The Jira API operations are documented in the
+[Atlassian comment reference](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-comments/).
+
+To resend, supply your identity and reason, acknowledge that a duplicate comment
+may result, then choose **Resend approved message**. This queues the original
+approved text without editing or reapproving it. Only the latest outbound message
+in a waiting or completed case can be requeued; the dispatcher checks again
+before sending. A reply received after requeue suppresses that resend. Past
+uncertain deliveries can still be positively verified after the conversation
+moves on. Requester-message recovery never authorizes infrastructure changes.
+
+The authenticated API is:
+
+```text
+POST /v1/investigations/{id}/messages/{messageID}/recovery
+Authorization: Bearer $WARDSTONE_OPERATOR_TOKEN
+Content-Type: application/json
+```
+
+Use the current delivery `revision` from `GET /v1/investigations/{id}/messages`:
+
+```json
+{"action":"reconcile","revision":2,"actor":"operator@example.com","reason":"Checked the issue after a service restart","remote_id":"10001"}
+```
+
+Or deliberately requeue the exact approved text:
+
+```json
+{"action":"resend","revision":2,"actor":"operator@example.com","reason":"Checked Jira; accept possible duplicate delivery","acknowledge_duplicate_risk":true}
+```
+
+A successful request returns `{ "delivery": { ... }, "outcome": "..." }`.
+Outcomes are `verified`, `resend_queued`, `comment_not_found`, `comment_mismatch`,
+or `jira_verification_unavailable`. Every recorded check advances the revision,
+including checks that leave the send unresolved. A stale or ineligible request
+returns HTTP 409; refresh before deciding again. A lost response can be resolved
+by reloading delivery state and its audit timeline; retrying an old revision
+cannot enqueue another send. SHADOW, unavailable Jira delivery, and absent
+recovery configuration return HTTP 503. The messages read exposes
+`recovery_enabled` for operator surfaces.
+
+Claimed send attempts, retry scheduling, failures, confirmation, and operator
+recovery decisions commit with append-only audit events. The original draft and
+review are immutable. Authentication remains the single-administrator bearer
+token; actor names are operator assertions, not independently authenticated user
+identities. This recovery workflow is tested with simulated Jira endpoints and
+PostgreSQL; a real Jira tenant still needs pilot verification. Ambiguous POSTs
+remain capable of producing duplicates after an explicit resend.
+
+
+## Vendor risk scoring
+
+Go owns the overall rating for new vendor reports. The model returns
+`vendor_assessment.criteria` with a configured criterion ID, `met`, `partial`,
+`unmet`, or `unknown`, a concise reason, and supplied vendor-document evidence IDs.
+It cannot return `risk_assessment` or an overall score. Questions/handoffs and
+other specialists cannot attach vendor assessments. Missing criterion assessments
+are retained as unknowns rather than silently treated as satisfied.
+
+Declare an administrator-owned rubric and deployment context in the policy file:
+
+```yaml
+vendor_risk:
+  rubric:
+    version: example-v1
+    moderate_at: 25
+    high_at: 60
+    criteria:
+      - id: identity
+        requirement: Identity controls match the declared deployment scope.
+        weight: 40
+        evidence: vendor_claim
+      - id: assurance
+        requirement: Independent assurance covers the intended service.
+        weight: 60
+        evidence: independent_report
+  deployments:
+    Example vendor:
+      use_case: Internal collaboration
+      data_classification: Internal
+      access_scope: Read-only access to selected documents
+```
+
+This is example policy, not an industry-calibrated standard. Review the criteria,
+thresholds, source designations, and intended deployment before using a rating.
+The repository example includes four 25-point criteria and deliberately leaves
+`deployments` empty so it cannot invent the intended Tailscale deployment.
+Criteria IDs are unique lowercase identifiers, at most 48 characters. Configure
+1–8 criteria, positive integer weights summing to 100, and thresholds with
+`1 <= moderate_at < high_at <= 100`. Context strings and requirements are each
+bounded to 600 bytes; at most 128 vendor deployments are permitted.
+
+Deployment keys normalize whitespace and case and match the research catalog
+selector. `use_case`, `data_classification`, and `access_scope` all need actual
+administrator declarations. Ticket fields, model assumptions, and collected
+website text cannot supply or override scoring policy/context. The current-run
+research selector chooses the vendor; a historical selector cannot select scope.
+
+When the review is complete, `met` contributes zero risk points, `partial` half
+its criterion weight, and `unmet` the full weight. Sum contributions and round up
+once at the end. A score below `moderate_at` is LOW; one at or above it is
+MODERATE unless it meets `high_at`, which is HIGH. **Any evidence gap instead
+produces UNKNOWN and withholds the numeric score**, including:
+
+- Missing rubric, unresolved vendor, or missing administrator deployment context.
+- Missing/unknown criterion assessments or conflicting evidence marked unknown.
+- Missing current documents, omitted model-context sources, unavailable configured
+  sources, or truncated excerpts.
+- Historical citations or a criterion requiring an independent report when only
+  vendor claims were cited.
+
+Criterion citations must reference matching-vendor documents actually supplied
+to the run with explicit research capability provenance. Only current-run sources
+can complete a score. No documents means UNKNOWN. Unknowns do not count as zero
+risk. A partial or unavailable review may still identify concerns in its findings;
+UNKNOWN is not an approval or a statement that no problems were found.
+
+Catalog sources default to `claim_type: vendor_claim`. An administrator may label
+a reviewed source `claim_type: independent_report` in `research.vendors`:
+
+```yaml
+research:
+  vendors:
+    Example vendor:
+      - title: Administrator-reviewed independent assurance report
+        url: https://auditor.example/report.txt
+        claim_type: independent_report
+```
+
+This label records administrator judgment about the source; the collector does
+not independently authenticate an auditor or certify controls. A vendor web page
+claiming an audit is not itself the independent report. Knowledge/runbook sources
+cannot use this designation. Existing public text/HTML/Markdown collection limits
+still apply; authenticated portals and PDF parsing remain outside this slice.
+
+The immutable report's `risk_assessment.scoring` stores `weighted-v1`, the rubric
+snapshot and SHA-256, deployment context, criterion assessments, evidence gaps,
+and a score only when complete. `vendor.risk_scored` is a SYSTEM audit event
+committed with report completion. Historical model-assigned ratings remain
+readable and are labelled as legacy; changing the rubric never rewrites them.
+No database migration beyond the current schema version 10 is required.
+
+The console distinguishes model-interpreted criteria, vendor claims, and gaps.
+The runtime labels findings citing vendor claims accordingly. Bounded wording
+checks reject common SOC 2 certification phrases and model-authored risk labels;
+these checks are not a general semantic fact checker. Operators must still
+review the substance of every assessment and citation. Go generates the vendor
+requester-summary draft from its computed rating and gaps, preserving normal
+exact-message approval and delivery. The model's requester summary cannot assign
+an alternative final rating.
+
+`internal/domain/testdata/vendor_risk_evaluations.json` contains 12 synthetic
+scoring scenarios with expected outcomes. Domain tests add malformed/forged
+assessments, strict snapshot decoding, cloning, rounding, and wording checks;
+provider/API tests exercise schema authority and persistence. These are a seed
+evaluation set for review, not evidence of expert calibration or live-model
+semantic accuracy. They require no Workspace tenant or external model account.

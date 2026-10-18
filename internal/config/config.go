@@ -20,6 +20,7 @@ import (
 )
 
 type Config struct {
+	VendorRisk            domain.VendorRiskConfig
 	AccessHelp            AccessHelpConfig
 	VendorSources         research.Catalog
 	KnowledgeSources      research.Catalog
@@ -180,7 +181,8 @@ func loadPolicy(path string, config *Config) error {
 		return errors.New("configuration file must be at most 1 MiB")
 	}
 	var raw struct {
-		Research struct {
+		VendorRisk domain.VendorRiskConfig `yaml:"vendor_risk"`
+		Research   struct {
 			Vendors   research.Catalog `yaml:"vendors"`
 			Knowledge research.Catalog `yaml:"knowledge"`
 		} `yaml:"research"`
@@ -220,6 +222,10 @@ func loadPolicy(path string, config *Config) error {
 		return err
 	}
 	config.AccessHelp = AccessHelpConfig{resources: resources}
+	config.VendorRisk, err = raw.VendorRisk.Validated()
+	if err != nil {
+		return fmt.Errorf("vendor risk: %w", err)
+	}
 	base, err := filepath.Abs(filepath.Dir(path))
 	if err != nil {
 		return err

@@ -1,0 +1,14 @@
+[
+  {"name":"complete evidence meets both requirements","statuses":["met","met"],"expected_rating":"LOW","expected_score":0},
+  {"name":"half unmet assurance reaches moderate boundary","statuses":["met","partial"],"expected_rating":"MODERATE","expected_score":30},
+  {"name":"unmet assurance reaches high boundary","statuses":["met","unmet"],"expected_rating":"HIGH","expected_score":60},
+  {"name":"unmet identity is moderate","statuses":["unmet","met"],"expected_rating":"MODERATE","expected_score":40},
+  {"name":"all unmet reaches maximum","statuses":["unmet","unmet"],"expected_rating":"HIGH","expected_score":100},
+  {"name":"conflicting evidence remains unknown","statuses":["met","unknown"],"expected_rating":"UNKNOWN","expected_gap":"criterion_unknown"},
+  {"name":"vendor claims cannot replace an independent report","statuses":["met","met"],"vendor_only":true,"expected_rating":"UNKNOWN","expected_gap":"independent_report_missing"},
+  {"name":"deployment scope is required","statuses":["met","met"],"no_scope":true,"expected_rating":"UNKNOWN","expected_gap":"deployment_context_missing"},
+  {"name":"truncated document withholds numeric score","statuses":["met","met"],"truncated":true,"expected_rating":"UNKNOWN","expected_gap":"source_truncated"},
+  {"name":"failed configured source is visible","statuses":["met","met"],"unavailable":true,"expected_rating":"UNKNOWN","expected_gap":"source_unavailable"},
+  {"name":"historical report cannot establish current coverage","statuses":["met","met"],"historical":true,"expected_rating":"UNKNOWN","expected_gap":"historical_evidence"},
+  {"name":"omitted current document is a gap","statuses":["met","met"],"omitted":true,"expected_rating":"UNKNOWN","expected_gap":"source_omitted"}
+]

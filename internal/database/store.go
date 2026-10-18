@@ -317,6 +317,11 @@ func (s *Store) CompleteInvestigation(ctx context.Context, id domain.Investigati
 		if command.RowsAffected() != 1 {
 			return investigations.ErrInvalidTransition
 		}
+		if data := audit.VendorRiskData(report); data != nil {
+			if err := appendEvent(ctx, tx, id, audit.VendorRiskScored, audit.ActorSystem, "vendor-risk", at, data); err != nil {
+				return err
+			}
+		}
 		if err := appendEvent(ctx, tx, id, audit.DiagnosisGenerated, audit.ActorModel, string(provider), at, map[string]any{"model": model}); err != nil {
 			return err
 		}

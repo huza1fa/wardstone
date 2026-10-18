@@ -231,6 +231,9 @@ func (s *Store) CompleteInvestigation(_ context.Context, id domain.Investigation
 	item := s.investigations[id]
 	item.Diagnosis, item.ModelProvider, item.Model = diagnosis, provider, model
 	item.WorkPackage = report.Clone()
+	if data := audit.VendorRiskData(report); data != nil {
+		s.appendEvent(id, audit.VendorRiskScored, audit.ActorSystem, "vendor-risk", at, data)
+	}
 	s.appendEvent(id, audit.DiagnosisGenerated, audit.ActorModel, string(provider), at, map[string]any{"model": model})
 	for _, evaluation := range evaluations {
 		s.actions[id] = append(s.actions[id], cloneEvaluation(evaluation))

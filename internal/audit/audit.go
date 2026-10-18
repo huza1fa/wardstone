@@ -10,34 +10,40 @@ import (
 type EventType string
 
 const (
-	TicketReceived            EventType = "ticket.received"
-	DispatcherRouted          EventType = "dispatcher.routed"
-	SpecialistStarted         EventType = "specialist.started"
-	SpecialistHandedOff       EventType = "specialist.handed_off"
-	SpecialistCompleted       EventType = "specialist.completed"
-	InvestigationStarted      EventType = "investigation.started"
-	ToolInvoked               EventType = "tool.invoked"
-	EvidenceCollected         EventType = "evidence.collected"
-	EvidenceCollectionFailed  EventType = "evidence.collection_failed"
-	DiagnosisGenerated        EventType = "diagnosis.generated"
-	ActionProposed            EventType = "action.proposed"
-	PolicyEvaluated           EventType = "policy.evaluated"
-	ApprovalRequested         EventType = "approval.requested"
-	ApprovalGranted           EventType = "approval.granted"
-	ApprovalDenied            EventType = "approval.denied"
-	ApprovalExpired           EventType = "approval.expired"
-	ActionExecuted            EventType = "action.executed"
-	ActionFailed              EventType = "action.failed"
-	VerificationCompleted     EventType = "verification.completed"
-	TicketUpdated             EventType = "ticket.updated"
-	InvestigationCompleted    EventType = "investigation.completed"
-	InvestigationFailed       EventType = "investigation.failed"
-	RequesterQuestionAsked    EventType = "requester.question_asked"
-	RequesterReplyReceived    EventType = "requester.reply_received"
-	InvestigationResumed      EventType = "investigation.resumed"
-	RequesterMessageDelivered EventType = "requester.message_delivered"
-	RequesterMessageFailed    EventType = "requester.message_failed"
-	RequesterMessageReviewed  EventType = "requester.message_reviewed"
+	TicketReceived              EventType = "ticket.received"
+	DispatcherRouted            EventType = "dispatcher.routed"
+	SpecialistStarted           EventType = "specialist.started"
+	SpecialistHandedOff         EventType = "specialist.handed_off"
+	SpecialistCompleted         EventType = "specialist.completed"
+	InvestigationStarted        EventType = "investigation.started"
+	ToolInvoked                 EventType = "tool.invoked"
+	EvidenceCollected           EventType = "evidence.collected"
+	EvidenceCollectionFailed    EventType = "evidence.collection_failed"
+	VendorRiskScored            EventType = "vendor.risk_scored"
+	DiagnosisGenerated          EventType = "diagnosis.generated"
+	ActionProposed              EventType = "action.proposed"
+	PolicyEvaluated             EventType = "policy.evaluated"
+	ApprovalRequested           EventType = "approval.requested"
+	ApprovalGranted             EventType = "approval.granted"
+	ApprovalDenied              EventType = "approval.denied"
+	ApprovalExpired             EventType = "approval.expired"
+	ActionExecuted              EventType = "action.executed"
+	ActionFailed                EventType = "action.failed"
+	VerificationCompleted       EventType = "verification.completed"
+	TicketUpdated               EventType = "ticket.updated"
+	InvestigationCompleted      EventType = "investigation.completed"
+	InvestigationFailed         EventType = "investigation.failed"
+	RequesterQuestionAsked      EventType = "requester.question_asked"
+	RequesterReplyReceived      EventType = "requester.reply_received"
+	InvestigationResumed        EventType = "investigation.resumed"
+	RequesterMessageDelivered   EventType = "requester.message_delivered"
+	RequesterMessageFailed      EventType = "requester.message_failed"
+	RequesterSendStarted        EventType = "requester.send_started"
+	RequesterSendRetried        EventType = "requester.send_retried"
+	RequesterDeliveryChecked    EventType = "requester.delivery_checked"
+	RequesterDeliveryReconciled EventType = "requester.delivery_reconciled"
+	RequesterResendRequested    EventType = "requester.resend_requested"
+	RequesterMessageReviewed    EventType = "requester.message_reviewed"
 )
 
 type ActorType string
@@ -83,6 +89,27 @@ func EvidenceData(item domain.Evidence) map[string]any {
 		if json.Unmarshal(item.Data, &document) == nil {
 			result["title"], result["source_url"], result["content_sha256"], result["claim_type"], result["truncated"] = document.Title, document.URL, document.Digest, document.ClaimType, document.Truncated
 		}
+	}
+	return result
+}
+
+// VendorRiskData records deterministic scoring separately from model diagnosis.
+func VendorRiskData(report *domain.WorkPackage) map[string]any {
+	if report == nil || report.RiskAssessment == nil || report.RiskAssessment.Scoring == nil {
+		return nil
+	}
+	risk := report.RiskAssessment
+	s := risk.Scoring
+	codes := make([]string, 0, len(s.Gaps))
+	for _, g := range s.Gaps {
+		codes = append(codes, g.Code)
+	}
+	result := map[string]any{"rating": risk.Rating, "method": s.Method, "rubric_digest": s.RubricDigest, "gap_codes": codes}
+	if s.Context.Rubric != nil {
+		result["rubric_version"] = s.Context.Rubric.Version
+	}
+	if s.Score != nil {
+		result["score"] = *s.Score
 	}
 	return result
 }

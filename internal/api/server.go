@@ -29,9 +29,13 @@ type InvestigationReader interface {
 	Timeline(context.Context, domain.InvestigationID) ([]audit.Event, error)
 }
 
-type ConversationService interface {
-	ReceiveRequesterReply(context.Context, domain.ConnectorName, string, domain.CaseMessage) (domain.InvestigationID, bool, error)
+type CaseMessageReader interface {
 	ListMessages(context.Context, domain.InvestigationID) ([]domain.CaseMessage, error)
+}
+
+type ConversationService interface {
+	CaseMessageReader
+	ReceiveRequesterReply(context.Context, domain.ConnectorName, string, domain.CaseMessage) (domain.InvestigationID, bool, error)
 }
 
 // RoutingPreviewer evaluates ticket metadata without creating investigations or
@@ -53,6 +57,7 @@ type Server struct {
 	conversations  ConversationService
 	routingPreview RoutingPreviewer
 	setup          SetupService
+	recovery       MessageRecoveryService
 	reviews        MessageReviewService
 	reviewEnabled  bool
 	mode           domain.OperatingMode
@@ -132,6 +137,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/investigations/{id}", s.getInvestigation)
 	mux.HandleFunc("GET /v1/investigations/{id}/messages", s.getMessages)
 	mux.HandleFunc("POST /v1/investigations/{id}/messages/{messageID}/review", s.reviewMessage)
+	mux.HandleFunc("POST /v1/investigations/{id}/messages/{messageID}/recovery", s.recoverMessage)
 	mux.HandleFunc("GET /v1/investigations/{id}/timeline", s.getTimeline)
 	mux.HandleFunc("GET /v1/admin/overview", s.getAdminOverview)
 	mux.HandleFunc("GET /v1/admin/investigations", s.listAdminInvestigations)
@@ -283,11 +289,15 @@ func (s *Server) getMessages(writer http.ResponseWriter, request *http.Request) 
 		writeError(writer, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	if s.conversations == nil {
+	var reader CaseMessageReader = s.conversations
+	if reader == nil {
+		reader, _ = s.reader.(CaseMessageReader)
+	}
+	if reader == nil {
 		writeError(writer, http.StatusServiceUnavailable, "requester conversations are not configured")
 		return
 	}
-	messages, err := s.conversations.ListMessages(request.Context(), domain.InvestigationID(request.PathValue("id")))
+	messages, err := reader.ListMessages(request.Context(), domain.InvestigationID(request.PathValue("id")))
 	if errors.Is(err, investigations.ErrNotFound) {
 		writeError(writer, http.StatusNotFound, "investigation not found")
 		return
@@ -296,7 +306,7 @@ func (s *Server) getMessages(writer http.ResponseWriter, request *http.Request) 
 		writeError(writer, http.StatusInternalServerError, "could not load conversation")
 		return
 	}
-	payload := map[string]any{"messages": messages, "review_enabled": s.reviewEnabled && s.mode == domain.OperatingModeReview}
+	payload := map[string]any{"messages": messages, "review_enabled": s.reviewEnabled && s.mode == domain.OperatingModeReview, "recovery_enabled": s.recovery != nil && s.reviewEnabled && s.mode == domain.OperatingModeReview}
 	digests := make(map[domain.MessageID]string)
 	for _, message := range messages {
 		if message.Direction == domain.MessageOutbound {

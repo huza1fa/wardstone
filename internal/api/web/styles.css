@@ -153,3 +153,9 @@ dialog::backdrop { background: #03070bbd; backdrop-filter: blur(3px); }
 .message-review { display: grid; gap: .75rem; margin-top: 1rem; }
 .message-review textarea { width: 100%; resize: vertical; }
 .message-review .button { justify-self: start; }
+
+.message-recovery { display: grid; gap: .75rem; margin-top: 1rem; padding: 1rem; border: 1px solid var(--amber); border-radius: .5rem; }
+.message-recovery textarea { width: 100%; resize: vertical; }
+.message-recovery .button { justify-self: start; }
+.recovery-risk { display: flex; align-items: flex-start; gap: .65rem; }
+.recovery-risk input { width: auto; flex: 0 0 auto; margin-top: .2rem; }

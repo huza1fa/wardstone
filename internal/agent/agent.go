@@ -17,13 +17,14 @@ type Request struct {
 	Conversation       []domain.CaseMessage
 	Warnings           []string
 	Handoffs           []HandoffContext
-	Specialist         domain.SpecialistName   `json:"specialist"`
-	Instructions       string                  `json:"instructions"`
-	PermittedActions   []domain.CapabilityName `json:"permitted_actions"`
-	ActionContracts    []ActionContract        `json:"action_contracts,omitempty"`
-	HandoffTargets     []domain.SpecialistName `json:"handoff_targets"`
-	HandoffOptions     []IntentCandidate       `json:"handoff_options,omitempty"`
-	ResponseConstraint string                  `json:"response_constraint,omitempty"`
+	Specialist         domain.SpecialistName       `json:"specialist"`
+	Instructions       string                      `json:"instructions"`
+	PermittedActions   []domain.CapabilityName     `json:"permitted_actions"`
+	ActionContracts    []ActionContract            `json:"action_contracts,omitempty"`
+	HandoffTargets     []domain.SpecialistName     `json:"handoff_targets"`
+	HandoffOptions     []IntentCandidate           `json:"handoff_options,omitempty"`
+	VendorReview       *domain.VendorReviewContext `json:"vendor_review,omitempty"`
+	ResponseConstraint string                      `json:"response_constraint,omitempty"`
 }
 
 type ActionContract struct {
@@ -48,11 +49,12 @@ type ProposedAction struct {
 }
 
 type Result struct {
-	Diagnosis        string              `json:"diagnosis"`
-	FollowUpQuestion string              `json:"follow_up_question"`
-	Actions          []ProposedAction    `json:"actions"`
-	Handoff          *Handoff            `json:"handoff,omitempty"`
-	WorkPackage      *domain.WorkPackage `json:"work_package,omitempty"`
+	Diagnosis        string                   `json:"diagnosis"`
+	FollowUpQuestion string                   `json:"follow_up_question"`
+	Actions          []ProposedAction         `json:"actions"`
+	Handoff          *Handoff                 `json:"handoff,omitempty"`
+	WorkPackage      *domain.WorkPackage      `json:"work_package,omitempty"`
+	VendorAssessment *domain.VendorAssessment `json:"vendor_assessment,omitempty"`
 }
 
 // Handoff asks the deterministic runtime to resume the same durable case with

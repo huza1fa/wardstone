@@ -28,7 +28,7 @@ type Store interface {
 	ClaimDelivery(context.Context, string, time.Duration) (Job, error)
 	CompleteDelivery(context.Context, Job, string, time.Time) error
 	RetryDelivery(context.Context, Job, string, time.Time, time.Time) error
-	FailDelivery(context.Context, Job, string, time.Time) error
+	FailDelivery(context.Context, Job, string, domain.DeliveryStatus, time.Time) error
 }
 
 type Sender interface {
@@ -118,8 +118,13 @@ func (d *Dispatcher) runOne(ctx context.Context) error {
 	if retryable(sendErr) && job.Delivery.Attempt < d.config.MaxAttempts {
 		return d.store.RetryDelivery(ctx, job, sendErr.Error(), now, now.Add(retryDelay(job.Delivery.Attempt)))
 	}
-	if err := d.store.FailDelivery(ctx, job, sendErr.Error(), now); err != nil {
-		return fmt.Errorf("mark delivery dead after %v: %w", sendErr, err)
+	status := domain.DeliveryUncertain
+	var outcome interface{ OutcomeUnknown() bool }
+	if errors.As(sendErr, &outcome) && !outcome.OutcomeUnknown() {
+		status = domain.DeliveryFailed
+	}
+	if err := d.store.FailDelivery(ctx, job, sendErr.Error(), status, now); err != nil {
+		return fmt.Errorf("record delivery outcome after %v: %w", sendErr, err)
 	}
 	return nil
 }

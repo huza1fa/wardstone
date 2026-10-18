@@ -156,7 +156,7 @@ PostgreSQL stores:
 - `message_deliveries`, a transactional requester-message outbox with leases,
   bounded attempts, remote IDs, and delivery state.
 
-The runtime requires schema versions 1 through **9**. Migration 8 adds evidence
+The runtime requires schema versions 1 through **10**. Migration 8 adds evidence
 capability provenance and a newest-first case/capability index; it leaves legacy
 provenance empty rather than guessing from connector or kind. It also adds the
 optional `investigations.work_package`, publishable only in the
@@ -267,7 +267,7 @@ schema:
 | `escalation_reason` | Why operator judgment/authority is needed; empty if none |
 | `requester_summary` | Requester-facing draft, separate from internal findings |
 | `expected_impact` | Expected outcome/impact of proposed next steps |
-| `risk_assessment` | Optional provisional vendor rating, rationale, and evidence IDs |
+| `risk_assessment` | Optional provisional vendor rating, rationale, evidence IDs, and Go scoring snapshot |
 
 Minimal example (the citation must be a real supplied ID):
 
@@ -437,9 +437,37 @@ immutable. Resumed reasoning uses approved text rather than superseded drafts.
 The REVIEW dispatcher excludes legacy unreviewed rows and suppresses drafts
 already superseded at claim time. Jira POSTs are not exactly-once operations:
 timeouts, malformed acknowledgements, server failures, and expired running
-leases can have unknown remote outcomes. These stop for operator reconciliation;
-only an explicit throttle response is retried automatically. Pending deliveries
-remain durable across restarts. No automatic reconciliation/resend UI exists yet.
+leases can have unknown remote outcomes. These stop as `NEEDS_RECONCILIATION`; known rejected writes stop as `FAILED`.
+Only an explicit throttle response is retried automatically. Queued messages
+superseded before dispatch become `SUPERSEDED`. Pending deliveries remain durable
+across restarts.
+
+Migration 10 replaces legacy `DEAD` states conservatively, adds a monotonically
+increasing delivery revision, and records whether a claimed send requires a
+message-correlation property. New Jira comments carry the immutable message ID
+and approved-text digest as a property. A separate recovery service performs
+bounded Jira identity/comment reads outside database transactions. Confirmation
+requires an issue-scoped comment with matching author, creation time, exact ADF
+body, and required correlation. Legacy sends allow absent correlation; present
+but mismatched correlation fails. Negative or unavailable reads never establish
+non-delivery.
+
+The operator may positively reconcile a past uncertain/failed send or explicitly
+requeue its unchanged approved text. Both actions require the current delivery
+revision, actor, and reason; resend also requires duplicate-risk acknowledgement.
+Every recorded check advances the revision. A stale verification cannot overwrite
+a concurrent resend, and concurrent resends queue once. Resends require a current
+waiting/completed case and latest outbound message, rechecked at dispatch. A
+historical send can still be verified after a requester reply.
+
+Delivery mutations lock the case before modifying the outbox, matching review and
+requester-reply lock order. Claims reload delivery and conversation state under
+that lock so a stale join snapshot cannot bypass supersession checks. Short
+transactions append send-attempt and recovery events with the associated state
+change. Attempts retain their monotonic count; automatic retry limits are not
+reset by manual recovery. Lost recovery responses are resolved by reloading the
+revision and timeline, rather than repeating a request with a new revision.
+See [operator recovery and API examples](development.md#jira-delivery-recovery).
 
 ### Bounded specialist research
 
@@ -455,8 +483,23 @@ and excerpt budgets; unavailable sources remain explicit gaps.
 Observations retain title, configured URL, content hash, claim type, truncation,
 and observation time. The audit timeline omits document bodies and local paths.
 Vendor claims are evidence of what a vendor states, not independent attestations.
-Known risk ratings require a collected vendor-document citation; absent documents
-permit only UNKNOWN. Risk is a provisional model assessment, not authorization.
+New vendor reports use a versioned administrator-owned rubric and deployment
+context. The provider returns only bounded criterion assessments; the runtime
+rejects model-generated overall risk assessments. Go validates citations against
+supplied matching-vendor research documents, checks current-run source coverage,
+and derives the rating. Missing scope, unknown criteria, failed/truncated/omitted
+sources, historical evidence, or missing required independent reports produce
+UNKNOWN with no score. Complete reviews use weighted unmet/partial criteria and
+administrator thresholds. No policy is inferred from ticket text.
+
+Reports store the rubric snapshot/digest, context, model interpretations, and
+gaps under `risk_assessment.scoring`; a SYSTEM `vendor.risk_scored` event commits
+with completion. Context and citation authority are frozen before invoking the
+provider. Vendor-claim findings are labelled separately and Go generates the
+requester-summary rating text. Narrow terminology checks catch known pilot
+wording failures without claiming to establish semantic truth. Legacy model
+ratings remain readable with no retroactive reinterpretation. See
+[vendor scoring configuration and evaluation](development.md#vendor-risk-scoring).
 
 Current-run selector observations constrain question/report boundaries. Known
 operator configuration errors produce final escalation reports; unresolved

@@ -29,16 +29,17 @@ type WorkPackage struct {
 	RiskAssessment   *RiskAssessment `json:"risk_assessment,omitempty"`
 }
 
-// A model-generated risk rating is a provisional assessment of cited sources,
-// never business authorization or an independent certification.
+// RiskAssessment preserves legacy model ratings and new Go-computed ratings.
+// Scoring records the deterministic policy snapshot; ratings never grant authority.
 type RiskAssessment struct {
-	Rating      string       `json:"rating"`
-	Rationale   string       `json:"rationale"`
-	EvidenceIDs []EvidenceID `json:"evidence_ids"`
+	Rating      string         `json:"rating"`
+	Rationale   string         `json:"rationale"`
+	EvidenceIDs []EvidenceID   `json:"evidence_ids"`
+	Scoring     *VendorScoring `json:"scoring,omitempty"`
 }
 
 type Finding struct {
-	Kind        string       `json:"kind"` // verified or assumption
+	Kind        string       `json:"kind"` // verified, vendor_claim, or assumption
 	Statement   string       `json:"statement"`
 	EvidenceIDs []EvidenceID `json:"evidence_ids"`
 }
@@ -52,6 +53,7 @@ func (w *WorkPackage) Clone() *WorkPackage {
 	if w.RiskAssessment != nil {
 		risk := *w.RiskAssessment
 		risk.EvidenceIDs = append([]EvidenceID(nil), risk.EvidenceIDs...)
+		risk.Scoring = risk.Scoring.Clone()
 		copy.RiskAssessment = &risk
 	}
 	if w.Findings != nil {
@@ -111,6 +113,15 @@ func (w *WorkPackage) Validate(supplied []Evidence) error {
 				return fmt.Errorf("risk assessment references unknown evidence %q", id)
 			}
 		}
+		if w.RiskAssessment.Scoring != nil {
+			for _, gap := range w.RiskAssessment.Scoring.Gaps {
+				for _, id := range gap.EvidenceIDs {
+					if !known[id] {
+						return errors.New("vendor gap cites unsupplied evidence")
+					}
+				}
+			}
+		}
 		if w.RiskAssessment.Rating != "UNKNOWN" {
 			hasDocument := false
 			for _, item := range supplied {
@@ -156,8 +167,8 @@ func (w *WorkPackage) ValidateStructure() error {
 	statements := make(map[string]bool)
 	citations := 0
 	for _, finding := range w.Findings {
-		if finding.Kind != "verified" && finding.Kind != "assumption" {
-			return errors.New("finding kind must be verified or assumption")
+		if finding.Kind != "verified" && finding.Kind != "assumption" && finding.Kind != "vendor_claim" {
+			return errors.New("finding kind must be verified, vendor_claim, or assumption")
 		}
 		if err := validateText("finding statement", finding.Statement, 4000, true); err != nil {
 			return err
@@ -167,7 +178,7 @@ func (w *WorkPackage) ValidateStructure() error {
 			return errors.New("duplicate finding statement")
 		}
 		statements[key] = true
-		if finding.Kind == "verified" && len(finding.EvidenceIDs) == 0 {
+		if (finding.Kind == "verified" || finding.Kind == "vendor_claim") && len(finding.EvidenceIDs) == 0 {
 			return errors.New("verified finding requires evidence citations")
 		}
 		if len(finding.EvidenceIDs) > 32 {
@@ -190,6 +201,14 @@ func (w *WorkPackage) ValidateStructure() error {
 	}
 	unknowns := make(map[string]bool)
 	if risk := w.RiskAssessment; risk != nil {
+		if risk.Scoring != nil {
+			if err := risk.Scoring.Validate(risk); err != nil {
+				return err
+			}
+			for _, gap := range risk.Scoring.Gaps {
+				citations += len(gap.EvidenceIDs)
+			}
+		}
 		if risk.Rating != "LOW" && risk.Rating != "MODERATE" && risk.Rating != "HIGH" && risk.Rating != "UNKNOWN" {
 			return errors.New("risk rating must be LOW, MODERATE, HIGH, or UNKNOWN")
 		}
@@ -245,7 +264,7 @@ func (w *WorkPackage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if raw, ok := fields["risk_assessment"]; ok {
-		if _, err := strictFields(raw, "rating", "rationale", "evidence_ids"); err != nil {
+		if _, err := strictFields(raw, "rating", "rationale", "evidence_ids", "scoring"); err != nil {
 			return err
 		}
 	}

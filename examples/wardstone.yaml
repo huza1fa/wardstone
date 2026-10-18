@@ -18,6 +18,34 @@ research:
   # Add administrator-owned .md/.txt runbooks relative to this policy file.
   knowledge: {}
 
+# Example policy for review, not an industry-calibrated risk model.
+# Omitted rubric or deployment context produces UNKNOWN, never implicit LOW.
+vendor_risk:
+  rubric:
+    version: example-v1
+    moderate_at: 25
+    high_at: 60
+    criteria:
+      - id: identity_access
+        requirement: Evidence describes SSO, MFA, and least-privilege controls appropriate to the declared deployment.
+        weight: 25
+        evidence: vendor_claim
+      - id: data_protection
+        requirement: Evidence describes encryption and data isolation appropriate to the declared data classification.
+        weight: 25
+        evidence: vendor_claim
+      - id: data_lifecycle
+        requirement: Evidence describes retention, deletion, subprocessors, and data use for the declared deployment.
+        weight: 25
+        evidence: vendor_claim
+      - id: independent_assurance
+        requirement: A reviewed independent assurance report covers the intended service and relevant controls.
+        weight: 25
+        evidence: independent_report
+  # Key by the same exact vendor name as research.vendors. Declare the actual
+  # use_case, data_classification, and access_scope before requesting a rating.
+  deployments: {}
+
 capabilities:
   research.vendor.collect:
     mode: allow
@@ -84,7 +112,8 @@ specialists:
       missing vendor artifact when the requester can provide it.
       Collect configured vendor documents using the Vendor selector. Return an
       executive summary, cited findings, deployment assumptions, unknowns, and
-      a provisional LOW/MODERATE/HIGH/UNKNOWN risk rating with rationale.
+      structured criterion assessments for the configured vendor rubric. Go computes
+      the provisional risk rating; do not choose a rating in model text.
       Attribute vendor claims and escalate unavailable evidence rather than
       treating model training knowledge as research.
     collectors:

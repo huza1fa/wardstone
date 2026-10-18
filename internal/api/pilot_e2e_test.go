@@ -41,7 +41,7 @@ func (m *pilotModel) Diagnose(_ context.Context, r agent.Request) (agent.Result,
 	return m.respond(r), nil
 }
 
-func pilotService(t *testing.T, pool *pgxpool.Pool, model *pilotModel, collectors []connectors.EvidenceCollector, profiles []specialists.Profile, rules []specialists.RouteRule) (*database.Store, *investigations.Service, *api.Server) {
+func pilotService(t *testing.T, pool *pgxpool.Pool, model *pilotModel, collectors []connectors.EvidenceCollector, profiles []specialists.Profile, rules []specialists.RouteRule, riskConfig ...domain.VendorRiskConfig) (*database.Store, *investigations.Service, *api.Server) {
 	t.Helper()
 	store := database.NewStore(pool)
 	registry := capabilities.NewRegistry()
@@ -54,7 +54,11 @@ func pilotService(t *testing.T, pool *pgxpool.Pool, model *pilotModel, collector
 	}
 	intent := specialists.DefaultIntentConfig()
 	intent.Enabled = false
-	service, err := investigations.NewService(store, collectors, model, registry, policy.New(domain.OperatingModeReview, registry, nil), investigations.Config{MaxConcurrentCollectors: 2, CollectorTimeout: time.Second, ModelTimeout: time.Second, PromptVersion: "pilot-test", Specialists: roles, RoutingRules: rules, IntentClassification: &intent})
+	vendorRisk := domain.VendorRiskConfig{}
+	if len(riskConfig) > 0 {
+		vendorRisk = riskConfig[0]
+	}
+	service, err := investigations.NewService(store, collectors, model, registry, policy.New(domain.OperatingModeReview, registry, nil), investigations.Config{VendorRisk: vendorRisk, MaxConcurrentCollectors: 2, CollectorTimeout: time.Second, ModelTimeout: time.Second, PromptVersion: "pilot-test", Specialists: roles, RoutingRules: rules, IntentClassification: &intent})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +249,7 @@ func TestReviewedDeliveryCrashRequiresReconciliation(t *testing.T) {
 		t.Fatalf("unknown outcome reclaimed for another POST: %v", err)
 	}
 	items, _ := store.ListDeliveries(context.Background(), intake.ID)
-	if len(items) != 1 || items[0].Status != domain.DeliveryDead || items[0].LastError != "delivery_outcome_unknown" {
+	if len(items) != 1 || items[0].Status != domain.DeliveryUncertain || items[0].LastError != "delivery_outcome_unknown" {
 		t.Fatalf("missing reconciliation state: %+v", items)
 	}
 }
@@ -279,7 +283,7 @@ func TestResearchSpecialistsEndToEnd(t *testing.T) {
 		}
 		report := &domain.WorkPackage{Version: 1, Summary: "Executive summary based on configured sources", Findings: []domain.Finding{{Kind: "verified", Statement: "The collected document states encrypted transport", EvidenceIDs: []domain.EvidenceID{doc.ID}}}, RequesterSummary: "Source-backed result", Unknowns: []string{"Actual deployment configuration"}}
 		if r.Specialist == specialists.VendorReview {
-			report.RiskAssessment = &domain.RiskAssessment{Rating: "MODERATE", Rationale: "Provisional pending deployment review", EvidenceIDs: []domain.EvidenceID{doc.ID}}
+			return agent.Result{Diagnosis: report.Summary, WorkPackage: report, VendorAssessment: &domain.VendorAssessment{Criteria: []domain.VendorCriterionAssessment{}}}
 		}
 		return agent.Result{Diagnosis: report.Summary, WorkPackage: report}
 	}}
@@ -299,7 +303,7 @@ func TestResearchSpecialistsEndToEnd(t *testing.T) {
 		if err != nil || item.Status != domain.InvestigationCompleted || item.Specialist != tc.role || len(item.WorkPackage.Findings) != 1 {
 			t.Fatalf("case=%+v err=%v", item, err)
 		}
-		if tc.role == specialists.VendorReview && item.WorkPackage.RiskAssessment.Rating != "MODERATE" {
+		if tc.role == specialists.VendorReview && item.WorkPackage.RiskAssessment.Rating != "UNKNOWN" {
 			t.Fatal("risk assessment lost")
 		}
 		events, _ := store.Timeline(context.Background(), intake.ID)
@@ -353,7 +357,7 @@ func TestSupersededReviewsAndPendingSendsAreRejected(t *testing.T) {
 				t.Fatalf("superseded question was sent: %v", err)
 			}
 			deliveries, _ := store.ListDeliveries(context.Background(), intake.ID)
-			if len(deliveries) != 1 || deliveries[0].Status != domain.DeliveryDead || deliveries[0].LastError != "draft_superseded" {
+			if len(deliveries) != 1 || deliveries[0].Status != domain.DeliverySuperseded || deliveries[0].LastError != "draft_superseded" {
 				t.Fatalf("superseded delivery=%+v", deliveries)
 			}
 		} else {

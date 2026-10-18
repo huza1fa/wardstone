@@ -154,3 +154,37 @@ func TestPublicNetworkBoundary(t *testing.T) {
 		t.Fatal("private server was reachable")
 	}
 }
+
+func TestConfiguredIndependentReportProvenance(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("Synthetic independent report"))
+	}))
+	defer server.Close()
+	collector, err := NewCollector(VendorCollect, Catalog{"Acme": {{Title: "Independent report", URL: server.URL, ClaimType: "independent_report"}}}, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := domain.Ticket{Metadata: domain.TicketMetadata{Fields: map[string][]string{"Vendor": {"Acme"}}}}
+	evidence, err := collector.Collect(context.Background(), ticket)
+	if err != nil || len(evidence) != 2 {
+		t.Fatalf("evidence=%v err=%v", evidence, err)
+	}
+	var doc struct {
+		ClaimType string `json:"claim_type"`
+	}
+	if err := json.Unmarshal(evidence[1].Data, &doc); err != nil || doc.ClaimType != "independent_report" {
+		t.Fatalf("claim type=%s err=%v", doc.ClaimType, err)
+	}
+	for _, kind := range []string{"trusted", "verified", ""} {
+		if kind == "" {
+			continue
+		}
+		if _, err := ValidateCatalog(Catalog{"Acme": {{Title: "Fake trust", URL: server.URL, ClaimType: kind}}}, "", false); err == nil {
+			t.Fatal("unrecognized source trust accepted")
+		}
+	}
+	if _, err := ValidateCatalog(Catalog{"VPN": {{Title: "Runbook", Path: "vpn.md", ClaimType: "independent_report"}}}, t.TempDir(), true); err == nil {
+		t.Fatal("knowledge source claimed vendor report provenance")
+	}
+}
