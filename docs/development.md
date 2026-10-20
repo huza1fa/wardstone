@@ -258,6 +258,14 @@ the original byte snapshot on stdin and has no source-file/home/network access.
 If tools or sandbox permissions are missing, collection records a gap with no
 unsandboxed fallback. Existing public text sources continue to work.
 
+Ubuntu 24.04 also requires an AppArmor profile granting `userns,` to Bubblewrap.
+Follow Ubuntu's [application profile guidance](https://discourse.ubuntu.com/t/ubuntu-24-04-lts-noble-numbat-release-notes/39890#unprivileged-user-namespace-restrictions-14)
+when configuring a host where unprivileged user namespaces are restricted.
+Installing the parser packages alone may still leave extraction unavailable.
+CI pins Ubuntu 24.04, loads a profile attached to `/usr/bin/bwrap` on its disposable
+runner, and checks namespace startup before running the mandatory extraction tests.
+The workflow does not change the system-wide namespace restriction.
+
 Keep configured file directories under administrator control. Each configured
 file opens relative to a confined directory handle; escaping symlinks and
 nonregular files are rejected. Linux is required for confined local file reads.
