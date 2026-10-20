@@ -191,6 +191,8 @@ func (m TicketMetadata) Validate() error {
 }
 
 type Investigation struct {
+	CaseID        InvestigationID     `json:"case_id,omitempty"`
+	ParentID      InvestigationID     `json:"parent_id,omitempty"`
 	ID            InvestigationID     `json:"id"`
 	TicketID      TicketID            `json:"ticket_id"`
 	Status        InvestigationStatus `json:"status"`

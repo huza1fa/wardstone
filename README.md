@@ -12,6 +12,12 @@ fixtures, a fictional VPN runbook, and live OpenRouter responses. Vendor researc
 uses configured public Tailscale documents. No real Jira or Workspace tenant is
 shown.
 
+The console also supports direct case creation, cancellation, and fresh linked
+retry attempts. An optional synthetic connector exercises approved execution and
+independent verification without Workspace. A saved-case CLI compares model
+outputs with shared citation/scoring checks. See the [operator guide](docs/operator-guide.md)
+and [upgrade notes](docs/release-2026-10-19.md).
+
 ## From ticket to reviewed result
 
 1. **Receive and route.** Authenticated Jira intake creates a durable case.
@@ -38,7 +44,10 @@ rationale, and cited sources. Go computes new ratings from an administrator-owne
 rubric and declared deployment context; missing evidence produces UNKNOWN with
 visible gaps. The report retains the rubric snapshot and model-interpreted
 criteria. Each citation shows the source URL, observation
-time, content hash, and whether the excerpt was truncated.
+time, content hash, and whether the excerpt was truncated. Configured local
+PDFs carry page-specific citations; unreadable pages remain explicit gaps. Both
+vendor and knowledge catalogs also accept Markdown and plain-text files. See
+[file evidence setup](docs/development.md#vendor-sources-and-systems-runbooks).
 
 Sources come from an administrator-owned catalog. Vendor documents remain
 vendor claims; the rating is an assessment for operator review. Missing audit

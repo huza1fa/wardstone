@@ -110,7 +110,7 @@ func (p *Pool) runJob(ctx context.Context, job Job) error {
 	go func() {
 		done <- p.handler.Run(jobCtx, job.InvestigationID)
 	}()
-	interval := p.lease / 3
+	interval := min(p.lease/3, time.Second)
 	if interval <= 0 {
 		interval = time.Millisecond
 	}

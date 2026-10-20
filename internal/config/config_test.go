@@ -96,7 +96,7 @@ func clearRuntimeEnvironment(t *testing.T) {
 	for _, key := range []string{
 		"WARDSTONE_CONFIG_FILE", "WARDSTONE_DATABASE_URL", "WARDSTONE_OPERATOR_TOKEN", "WARDSTONE_MODE",
 		"WARDSTONE_JIRA_WEBHOOK_SECRET", "WARDSTONE_JIRA_BASE_URL", "WARDSTONE_JIRA_EMAIL", "WARDSTONE_JIRA_API_TOKEN",
-		"WARDSTONE_AI_KEY", "WARDSTONE_MODEL_STRUCTURED_OUTPUT", "WARDSTONE_GOOGLE_ACCESS_TOKEN", "WARDSTONE_OPENAI_BASE_URL", "WARDSTONE_OPENAI_API_KEY", "WARDSTONE_OPENAI_MODEL",
+		"WARDSTONE_TEST_EXECUTION_ENABLED", "WARDSTONE_AI_KEY", "WARDSTONE_MODEL_STRUCTURED_OUTPUT", "WARDSTONE_GOOGLE_ACCESS_TOKEN", "WARDSTONE_OPENAI_BASE_URL", "WARDSTONE_OPENAI_API_KEY", "WARDSTONE_OPENAI_MODEL",
 	} {
 		t.Setenv(key, "")
 	}
@@ -215,5 +215,24 @@ func TestLoadPolicyRejectsUnknownSpecialistHandoff(t *testing.T) {
 	var config Config
 	if err := loadPolicy("testdata/invalid_specialist.yaml", &config); err == nil {
 		t.Fatal("expected invalid specialist handoff to be rejected")
+	}
+}
+
+func TestSyntheticExecutionIsOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		value          string
+		enabled, valid bool
+	}{{"", false, true}, {"false", false, true}, {"true", true, true}, {"invalid", false, false}} {
+		t.Run(tc.value, func(t *testing.T) {
+			clearRuntimeEnvironment(t)
+			t.Setenv("WARDSTONE_CONFIG_FILE", "testdata/valid.yaml")
+			t.Setenv("WARDSTONE_DATABASE_URL", "postgres://example.test/wardstone")
+			t.Setenv("WARDSTONE_OPERATOR_TOKEN", "operator-secret")
+			t.Setenv("WARDSTONE_TEST_EXECUTION_ENABLED", tc.value)
+			c, err := Load()
+			if (err == nil) != tc.valid || (err == nil && c.TestExecutionEnabled != tc.enabled) {
+				t.Fatalf("enabled=%v err=%v", c.TestExecutionEnabled, err)
+			}
+		})
 	}
 }

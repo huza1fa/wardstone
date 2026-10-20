@@ -20,6 +20,7 @@ import (
 )
 
 type Config struct {
+	TestExecutionEnabled  bool
 	VendorRisk            domain.VendorRiskConfig
 	AccessHelp            AccessHelpConfig
 	VendorSources         research.Catalog
@@ -87,6 +88,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	var err error
+	if value := os.Getenv("WARDSTONE_TEST_EXECUTION_ENABLED"); value != "" {
+		config.TestExecutionEnabled, err = strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, errors.New("WARDSTONE_TEST_EXECUTION_ENABLED must be a boolean")
+		}
+	}
 	if value := os.Getenv("WARDSTONE_MODEL_STRUCTURED_OUTPUT"); value != "" {
 		config.ModelStructuredOutput, err = strconv.ParseBool(value)
 		if err != nil {

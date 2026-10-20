@@ -243,3 +243,29 @@ func TestVendorPartialWeightsRoundOnceAtEnd(t *testing.T) {
 		t.Fatalf("rounding=%+v err=%v", risk, err)
 	}
 }
+
+func TestManyOmittedVendorPagesRemainAValidUnknownReport(t *testing.T) {
+	context, assessment, supplied := vendorFixture()
+	current := append([]Evidence{}, supplied...)
+	// Four configured documents can yield 80 page observations. If prompt
+	// compaction omits them, gap accounting must remain within report bounds.
+	for range 80 {
+		current = append(current, Evidence{ID: NewEvidenceID(), Source: "research", Capability: "research.vendor.collect", Kind: "research.vendor_document", Data: supplied[0].Data})
+	}
+	risk, err := ComputeVendorRisk(context, assessment, supplied, current)
+	if err != nil || risk.Rating != "UNKNOWN" || risk.Scoring.Score != nil {
+		t.Fatalf("omitted pages: %+v %v", risk, err)
+	}
+	report := &WorkPackage{Version: 1, Summary: "Incomplete page coverage", RiskAssessment: risk}
+	if err := report.Validate(supplied); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(report)
+	var decoded WorkPackage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(risk.Scoring.Gaps) != 1 || risk.Scoring.Gaps[0].Code != "source_omitted" {
+		t.Fatalf("unbounded gaps: %+v", risk.Scoring.Gaps)
+	}
+}

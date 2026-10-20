@@ -7,7 +7,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:17-alpine
@@ -34,9 +34,29 @@ jobs:
           node-version: "22"
       - name: Apply migrations
         run: for migration in migrations/*.sql; do psql "$WARDSTONE_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration"; done
+      - name: Install isolated PDF extraction tools
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils bubblewrap util-linux apparmor
+      - name: Allow Bubblewrap user namespaces on the CI runner
+        # Ubuntu 24.04 requires an application profile granting userns access.
+        # Keep the global restriction enabled; this allowance is CI-only.
+        run: |
+          sudo tee /etc/apparmor.d/wardstone-ci-bwrap >/dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile wardstone-ci-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+          sudo apparmor_parser -r /etc/apparmor.d/wardstone-ci-bwrap
+      - name: Check unprivileged sandbox startup
+        run: bwrap --unshare-all --ro-bind / / -- /usr/bin/true
       - name: Vet
         run: go vet ./...
       - name: Test with race detector
         run: go test -race ./...
       - name: Web console tests
         run: node --test internal/api/web_app_test.js
+      - name: Build binaries
+        run: go build ./cmd/wardstone ./cmd/wardstone-tui ./cmd/wardstone-eval
+      - name: Offline evaluation baseline
+        run: go run ./cmd/wardstone-eval --cases evaluations/pilot.json

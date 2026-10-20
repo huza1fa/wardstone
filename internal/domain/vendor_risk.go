@@ -218,12 +218,17 @@ func ComputeVendorRisk(context VendorReviewContext, assessment VendorAssessment,
 		documents[e.ID] = d
 	}
 	usable := 0
+	omitted := false
 	for _, e := range current {
 		if e.Source != "research" || e.Capability != "research.vendor.collect" {
 			continue
 		}
 		if e.Kind == "research.document_unavailable" {
-			gap("source_unavailable", "A configured vendor source could not be collected.")
+			var ids []EvidenceID
+			if _, supplied := known[e.ID]; supplied {
+				ids = []EvidenceID{e.ID}
+			}
+			gap("source_unavailable", "A configured vendor source could not be collected completely. Inspect its source gap in the evidence timeline.", ids...)
 			continue
 		}
 		if e.Kind != "research.vendor_document" {
@@ -231,13 +236,16 @@ func ComputeVendorRisk(context VendorReviewContext, assessment VendorAssessment,
 		}
 		d, ok := documents[e.ID]
 		if !ok {
-			gap("source_omitted", "A current vendor source is missing or unusable in model context.")
+			omitted = true
 			continue
 		}
 		usable++
 		if d.Truncated {
 			gap("source_truncated", "A vendor source exceeded the excerpt budget.", e.ID)
 		}
+	}
+	if omitted {
+		gap("source_omitted", "A current vendor source or page is missing or unusable in model context.")
 	}
 	if usable == 0 {
 		gap("no_current_documents", "No usable current-run vendor documents were supplied.")

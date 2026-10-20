@@ -357,7 +357,7 @@ test("setup serializes browser-initiated connector probes", async () => {
   const googleButton = { dataset: { setupName: "google" }, disabled: false, textContent: "Test connection" };
   get("setup-list").listeners.click({ target: { closest: () => modelButton } });
   get("setup-list").listeners.click({ target: { closest: () => googleButton } });
-  assert.equal(requests.filter((item) => item.url.includes("/test")).length, 1);
+  assert.equal(requests.filter((item) => item.url.endsWith("/test")).length, 1);
   resolveProbe({ body: { component: initial.components[0], setup: initial } });
   await settle();
 });
@@ -389,7 +389,7 @@ test("operator review submits the edited literal text and original draft digest"
 test("review conflict retains the draft and shows the server explanation", async () => {
   const { get } = harness({
     "/v1/investigations/conflict": { body: { status: "COMPLETED" } },
-    "/v1/investigations/conflict/messages": { body: { messages: [{ id: "draft", direction: "OUTBOUND", body: "Result" }], review_enabled: true, draft_digests: { draft: "digest" } } },
+    "/v1/investigations/conflict/messages": { body: { messages: [{ id: "draft", direction: "OUTBOUND", source: "jira", body: "Result" }], review_enabled: true, draft_digests: { draft: "digest" } } },
     "/v1/investigations/conflict/messages/draft/review": { status: 409, body: { error: "Draft was superseded" } },
   });
   openInvestigation(get, "conflict");
@@ -403,9 +403,9 @@ test("review conflict retains the draft and shows the server explanation", async
 
 test("review controls exclude shadow, superseded, and inbound messages", async () => {
   for (const [status, enabled, messages] of [
-    ["COMPLETED", false, [{ id: "draft", direction: "OUTBOUND", body: "Shadow result" }]],
-    ["PENDING", true, [{ id: "draft", direction: "OUTBOUND", body: "Obsolete question" }]],
-    ["WAITING_ON_REQUESTER", true, [{ id: "draft", direction: "OUTBOUND", body: "Old question" }, { id: "reply", direction: "INBOUND", body: "Answer" }]],
+    ["COMPLETED", false, [{ id: "draft", direction: "OUTBOUND", source: "jira", body: "Shadow result" }]],
+    ["PENDING", true, [{ id: "draft", direction: "OUTBOUND", source: "jira", body: "Obsolete question" }]],
+    ["WAITING_ON_REQUESTER", true, [{ id: "draft", direction: "OUTBOUND", source: "jira", body: "Old question" }, { id: "reply", direction: "INBOUND", body: "Answer" }]],
   ]) {
     const { get } = harness({
       "/v1/investigations/guard": { body: { status } },
@@ -421,7 +421,7 @@ test("reviewed delivery and provisional risk remain literal and cite their evide
   const hostile = '<script>alert(1)</script>';
   const { get } = harness({
     "/v1/investigations/delivered": { body: { status: "COMPLETED", work_package: { version: 1, summary: "Executive summary", findings: [], unknowns: [], risk_assessment: { rating: "MODERATE", rationale: hostile, evidence_ids: ["vendor-doc"] } } } },
-    "/v1/investigations/delivered/messages": { body: { messages: [{ id: "draft", direction: "OUTBOUND", body: "Original" }], review_enabled: true, deliveries: [{ message_id: "draft", status: "SENT", reviewed_by: "operator", reviewed_body: hostile, remote_id: "comment-1" }] } },
+    "/v1/investigations/delivered/messages": { body: { messages: [{ id: "draft", direction: "OUTBOUND", source: "jira", body: "Original" }], review_enabled: true, deliveries: [{ message_id: "draft", status: "SENT", reviewed_by: "operator", reviewed_body: hostile, remote_id: "comment-1" }] } },
   });
   openInvestigation(get, "delivered");
   await settle();
@@ -432,7 +432,7 @@ test("reviewed delivery and provisional risk remain literal and cite their evide
 
 function recoveryHarness({ status = "NEEDS_RECONCILIATION", enabled = true, superseded = false, recover } = {}) {
   const delivery = { message_id: "draft", status, revision: 4, attempt: 1, reviewed_at: "2026-10-17T12:00:00Z", reviewed_by: "original-operator", reviewed_body: "Exact approved text" };
-  const messages = [{ id: "draft", direction: "OUTBOUND", body: "Original draft" }];
+  const messages = [{ id: "draft", direction: "OUTBOUND", source: "jira", body: "Original draft" }];
   if (superseded) messages.push({ id: "reply", direction: "INBOUND", body: "New information" });
   const responses = {
     "/v1/investigations/recovery": { body: { status: "WAITING_ON_REQUESTER" } },
@@ -574,4 +574,131 @@ test("historical model-assigned vendor ratings remain readable and explicitly la
   openInvestigation(get, "vendor-legacy");
   await settle();
   assert.match(textOf(get("dialog-body")), /Legacy model-assigned rating/);
+});
+
+test("PDF citations show page provenance and explicit extraction gaps as literal text", async () => {
+  const { get } = harness({
+    "/v1/investigations/pdf": { body: { work_package: { version: 1, summary: "Review PDF", findings: [{ kind: "verified", statement: "Scoped report", evidence_ids: ["page-2", "gap"] }], unknowns: [] } } },
+    "/v1/investigations/pdf/timeline": { body: { events: [
+      { type: "evidence.collected", actor_type: "CONNECTOR", actor_id: "research", data: { evidence_id: "page-2", kind: "research.vendor_document", capability: "research.vendor.collect", format: "pdf", title: "Independent report <script>", content_sha256: "a".repeat(64), claim_type: "independent_report", page_number: 2, page_count: 4, extraction_method: "poppler-text-v1" } },
+      { type: "evidence.collected", actor_type: "CONNECTOR", actor_id: "research", data: { evidence_id: "gap", kind: "research.document_unavailable", format: "pdf", status: "pdf_pages_without_text", affected_pages: [3, 4] } },
+    ] } },
+  });
+  openInvestigation(get, "pdf");
+  await settle();
+  const text = textOf(get("dialog-body"));
+  for (const value of ["Page 2 of 4", "poppler-text-v1", "Independent report <script>", "a".repeat(64), "Operator review required", "Affected pages: 3, 4"]) assert.ok(text.includes(value), value);
+  assert.ok(!descendants(get("dialog-body")).some((e) => e.tagName === "script"));
+});
+
+test("operator case creation keeps its request ID across an uncertain response", async () => {
+  let calls = 0;
+  const { get, requests } = harness({ "/v1/admin/cases": () => { calls++; return calls === 1 ? { status: 503, body: { error: "Temporary failure" } } : { body: { investigation_id: "new-case" } }; } });
+  for (const [id, value] of Object.entries({ "case-actor": "Alex", "case-summary": "Review <script>", "case-description": "Local detail", "case-reason": "Pilot", "case-vendor": "Acme", "case-request-type": "Vendor review" })) get(id).value = value;
+  await submit(get("create-case-form"));
+  assert.ok(get("case-create-error").textContent.includes("Retry unchanged input"));
+  assert.equal(get("case-summary").value, "Review <script>");
+  await submit(get("create-case-form"));
+  const sent = requests.filter((r) => r.url === "/v1/admin/cases").map((r) => JSON.parse(r.options.body));
+  assert.equal(sent.length, 2); assert.equal(sent[0].request_id, sent[1].request_id);
+  assert.deepEqual(sent[0].metadata.fields, { Vendor: ["Acme"] });
+  assert.equal(get("case-summary").value, "");
+});
+
+test("case controls retain linked history and cancel with an attributed reason", async () => {
+  const id = "running-case";
+  const { get, requests } = harness({
+    [`/v1/investigations/${id}`]: { body: { status: "RUNNING", case_id: "original-case", parent_id: "original-case" } },
+    [`/v1/admin/investigations/${id}/case`]: { body: { runs_enabled: true, ticket: { source: "operator", summary: "Literal <img>" }, attempts: [{ id: "original-case", status: "FAILED" }, { id, status: "RUNNING", parent_id: "original-case" }] } },
+    [`/v1/admin/investigations/${id}/cancel`]: { status: 409, body: { error: "Already completed <script>" } },
+  });
+  openInvestigation(get, id); await settle();
+  const body = get("dialog-body"), nodes = descendants(body);
+  assert.ok(textOf(body).includes("original-case")); assert.ok(textOf(body).includes("Already claimed sends may still finish"));
+  const form = nodes.find((e) => e.tagName === "form" && textOf(e).includes("Cancel investigation"));
+  const inputs = descendants(form).filter((e) => e.tagName === "input"); inputs[0].value = "Alex"; inputs[1].value = "Stop stale work";
+  await submit(form);
+  const sent = requests.find((r) => r.url.endsWith("/cancel")); const payload = JSON.parse(sent.options.body);
+  assert.equal(payload.actor, "Alex"); assert.equal(payload.reason, "Stop stale work"); assert.ok(payload.request_id);
+  assert.ok(textOf(form).includes("Already completed <script>")); assert.equal(inputs[1].value, "Stop stale work");
+  assert.ok(!descendants(body).some((e) => ["script", "img"].includes(e.tagName)));
+});
+
+test("a late case command cannot reopen a different investigation", async () => {
+  let resolve;
+  const pending = new Promise((r) => { resolve = r; });
+  const { get } = harness({
+    "/v1/investigations/old-case": { body: { status: "FAILED" } },
+    "/v1/admin/investigations/old-case/case": { body: { runs_enabled: true, ticket: { source: "operator" }, attempts: [{ id: "old-case", status: "FAILED" }] } },
+    "/v1/admin/investigations/old-case/retry": () => pending,
+    "/v1/investigations/other-case": { body: { status: "COMPLETED", diagnosis: "Keep this case open" } },
+  });
+  openInvestigation(get, "old-case"); await settle();
+  const form = descendants(get("dialog-body")).find((e) => e.tagName === "form" && textOf(e).includes("Retry as a new attempt"));
+  const inputs = descendants(form).filter((e) => e.tagName === "input"); inputs[0].value = "Alex"; inputs[1].value = "Retry after fix";
+  const action = submit(form);
+  openInvestigation(get, "other-case"); await settle();
+  resolve({ body: { investigation_id: "new-attempt" } }); await action;
+  assert.ok(textOf(get("dialog-body")).includes("Keep this case open")); assert.equal(get("dialog-title").textContent, "other-case");
+});
+
+test("synthetic execution controls separate approval, queuing, and read-only recovery", async () => {
+  const summary = { action: { investigation_id: "test-case", arguments: { group: "test-team", member: "test-alice", expected_version: 0 }, digest: "a".repeat(64), reason: "Pilot <script>" }, approval: { id: "grant-1", status: "GRANTED" } };
+  const { get, requests } = harness({ "/v1/admin/test-executions": { body: { enabled: true, items: [summary, { ...summary, execution: { id: "execution-2", status: "NEEDS_RECONCILIATION", error: "verification_unavailable" } }] } } });
+  await get("test-execution-refresh").listeners.click();
+  const list = get("test-execution-list");
+  assert.ok(textOf(list).includes("Queue approved test execution")); assert.ok(textOf(list).includes("Verify again — read only")); assert.ok(textOf(list).includes("expected_version"));
+  const forms = descendants(list).filter((e) => e.tagName === "form");
+  for (const form of forms) { const inputs = descendants(form).filter((e) => e.tagName === "input"); inputs[0].value = "Alex"; inputs[1].value = "Explicit operator decision"; }
+  await submit(forms[1]);
+  const sent = requests.find((r) => r.url.endsWith("/execution-2/verify")); assert.ok(sent); assert.equal(JSON.parse(sent.options.body).reason, "Explicit operator decision");
+  assert.ok(!requests.some((r) => r.options.method === "POST" && r.url.endsWith("/queue")));
+  assert.ok(!descendants(list).some((e) => e.tagName === "script"));
+});
+
+test("disabled synthetic execution retains history without command forms", async () => {
+  const { get } = harness({ "/v1/admin/test-executions": { body: { enabled: false, items: [{ action: { arguments: {} }, approval: { status: "GRANTED" }, execution: { id: "paused", status: "NEEDS_RECONCILIATION" } }] } } });
+  await get("test-execution-refresh").listeners.click();
+  assert.equal(get("test-execution").hidden, false); assert.equal(get("test-proposal-form").hidden, true);
+  assert.ok(textOf(get("test-execution-error")).includes("paused")); assert.equal(descendants(get("test-execution-list")).filter((e) => e.tagName === "form").length, 0);
+});
+
+test("disconnect invalidates a pending case creation and restores usable forms", async () => {
+  let resolve;
+  const response = new Promise((r) => { resolve = r; });
+  const { get } = harness({ "/v1/admin/cases": () => response });
+  get("operator-token").value = "operator-secret"; await submit(get("connection-form")); await settle();
+  get("case-actor").value = "Alex"; get("case-summary").value = "Review"; get("case-reason").value = "Pilot";
+  const action = submit(get("create-case-form")); assert.equal(get("case-create-submit").disabled, true);
+  get("session-button").listeners.click();
+  assert.equal(get("case-create-submit").disabled, false);
+  resolve({ body: { investigation_id: "late-case" } }); await action;
+  assert.equal(get("dashboard").hidden, true); assert.equal(get("investigation-dialog").open, false);
+});
+
+test("an attempt with an existing retry offers history without another retry command", async () => {
+  const { get } = harness({
+    "/v1/investigations/original": { body: { status: "FAILED" } },
+    "/v1/admin/investigations/original/case": { body: { runs_enabled: true, ticket: { source: "operator" }, attempts: [{ id: "original", status: "FAILED" }, { id: "child", status: "COMPLETED", parent_id: "original" }] } },
+  });
+  openInvestigation(get, "original"); await settle();
+  assert.ok(textOf(get("dialog-body")).includes("child")); assert.ok(!textOf(get("dialog-body")).includes("Retry as a new attempt"));
+});
+
+
+test("console-origin drafts never offer Jira review controls", async () => {
+ const {get}=harness({"/v1/investigations/internal":{body:{status:"WAITING_ON_REQUESTER"}},"/v1/investigations/internal/messages":{body:{review_enabled:true,messages:[{id:"local",direction:"OUTBOUND",source:"operator",body:"Which system?"}]}}});
+ openInvestigation(get,"internal");await settle();
+ assert.ok(textOf(get("dialog-body")).includes("This conversation stays in the console"));
+ assert.ok(!descendants(get("dialog-body")).some((e)=>e.className==="message-review"));
+});
+
+test("console intake accepts explicit access selectors and rejects malformed fields", async () => {
+ const {get,requests}=harness({"/v1/admin/cases":{body:{investigation_id:"access-case"}}});
+ get("case-actor").value="Alex";get("case-summary").value="Inspect access";get("case-reason").value="Support";
+ get("case-fields").value='{"Access user":"person@example.com"}';await submit(get("create-case-form"));
+ assert.equal(requests.filter(r=>r.url==="/v1/admin/cases").length,0);
+ get("case-fields").value='{"Access resource":["Engineering tools"],"Access user":["person@example.com"]}';await submit(get("create-case-form"));
+ const payload=JSON.parse(requests.find(r=>r.url==="/v1/admin/cases").options.body);
+ assert.deepEqual(payload.metadata.fields,{"Access resource":["Engineering tools"],"Access user":["person@example.com"]});
 });

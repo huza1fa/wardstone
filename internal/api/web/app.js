@@ -20,13 +20,16 @@
   let setupRevision = 0;
   let activeSetupProbe = "";
   let detailRevision = 0;
+  let dashboardRevision = 0;
+  let createCaseRevision = 0;
+  let proposalRevision = 0;
 
   function node(tag, options = {}, children = []) {
     const element = document.createElement(tag);
     for (const [key, value] of Object.entries(options)) {
       if (key === "className") element.className = value;
       else if (key === "text") element.textContent = value;
-      else if (key.startsWith("data-")) element.setAttribute(key, value);
+      else if (key.startsWith("data-") || key.startsWith("aria-")) element.setAttribute(key, value);
       else element[key] = value;
     }
     for (const child of children) element.append(child);
@@ -62,6 +65,7 @@
 
   async function loadDashboard({ quiet = false } = {}) {
     if (!state.token) return;
+    const sessionToken=state.token, revision=++dashboardRevision;
     refreshButton.disabled = true;
     if (!quiet) connectionError.textContent = "";
     try {
@@ -70,6 +74,7 @@
         api("/v1/admin/investigations?limit=100"),
         api("/v1/admin/approvals?status=PENDING"),
       ]);
+      if (state.token!==sessionToken||revision!==dashboardRevision) return;
       state.investigations = investigationPayload.investigations || [];
       state.approvals = approvalPayload.approvals || [];
       renderOverview(overview);
@@ -81,7 +86,9 @@
       refreshButton.disabled = false;
       byId("last-updated").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
       loadSetup({ quiet });
+      loadTestExecutions();
     } catch (error) {
+      if (state.token!==sessionToken||revision!==dashboardRevision) return;
       refreshButton.disabled = false;
       if (error.status === 401) {
         disconnect();
@@ -210,6 +217,8 @@
         node("h3", { text: approval.ticket?.summary || "Proposed action" }),
         meta,
         node("p", { className: "approval-reason", text: approval.reason || approval.policy_reason || "No reason provided." }),
+        node("pre", { className: "literal-json", text: JSON.stringify(approval.arguments || {}, null, 2) }),
+        node("code", { className: "detail-copy", text: `Action SHA-256: ${approval.action_digest || "Not recorded"}` }),
       ]);
       list.append(node("article", { className: "approval-card" }, [content, node("div", { className: "approval-actions" }, [deny, grant])]));
     }
@@ -249,13 +258,14 @@
     body.replaceChildren(node("p", { text: "Loading investigation…" }));
     dialog.showModal();
     try {
-      const [investigation, timelinePayload, messagesPayload] = await Promise.all([
+      const [investigation, timelinePayload, messagesPayload, casePayload] = await Promise.all([
         api(`/v1/investigations/${encodeURIComponent(id)}`),
         api(`/v1/investigations/${encodeURIComponent(id)}/timeline`),
         api(`/v1/investigations/${encodeURIComponent(id)}/messages`).catch((error) => {
           if (error.status === 401) throw error;
           return { error: "Conversation could not be loaded." };
         }),
+        api(`/v1/admin/investigations/${encodeURIComponent(id)}/case`).catch((error) => { if (error.status === 401) throw error; return {}; }),
       ]);
       if (state.token !== sessionToken || revision !== detailRevision) return;
       const fields = node("div", { className: "detail-grid" }, [
@@ -275,11 +285,169 @@
         if (event.type === "action.proposed") entry.append(node("pre", { className: "literal-json", text: JSON.stringify(event.data?.arguments ?? null, null, 2) }));
         timeline.append(entry);
       }
-      body.replaceChildren(fields, routingCard(investigation.routing), reportCard(investigation.work_package, evidence), node("h3", { text: investigation.failure ? "Failure" : "Diagnosis" }), node("p", { className: "diagnosis", text: investigation.failure || investigation.diagnosis || "No diagnosis yet." }), actionsCard(events, evidence), conversationCard(messagesPayload, id, investigation.status), node("h3", { text: "Audit timeline" }), timeline);
+      body.replaceChildren(caseControls(investigation, casePayload, id), fields, routingCard(investigation.routing), reportCard(investigation.work_package, evidence), node("h3", { text: investigation.failure ? "Failure" : "Diagnosis" }), node("p", { className: "diagnosis", text: investigation.failure || investigation.diagnosis || "No diagnosis yet." }), actionsCard(events, evidence), conversationCard(messagesPayload, id, investigation.status, casePayload.ticket?.source), node("h3", { text: "Audit timeline" }), timeline);
     } catch (error) {
       if (state.token !== sessionToken || revision !== detailRevision) return;
       body.replaceChildren(emptyState("!", "Could not load investigation", error.message));
     }
+  }
+
+  let testExecutionRevision = 0;
+  async function loadTestExecutions() {
+    const revision = ++testExecutionRevision, token = state.token;
+    try {
+      const payload = await api("/v1/admin/test-executions");
+      if (revision !== testExecutionRevision || token !== state.token) return;
+      const items = payload.items || [];
+      byId("test-execution").hidden = !payload.enabled && !items.length;
+      byId("test-proposal-form").hidden = !payload.enabled;
+      byId("test-execution-error").textContent = payload.enabled ? "" : "Test execution is paused. History remains available.";
+      const list = byId("test-execution-list"); list.replaceChildren();
+      for (const item of items) {
+        const action = item.action || {}, approval = item.approval || {}, execution = item.execution;
+        const card = node("article", { className: "report-card" }, [node("h3", { text: "Synthetic group addition" }), detailField("Approval", approval.status), detailField("Execution", execution?.status || "Not queued"), node("pre", { className: "literal-json", text: JSON.stringify(action.arguments || {}, null, 2) }), detailField("Action SHA-256", action.digest), node("p", { className: "detail-copy", text: action.reason || "" })]);
+        const view = node("button", { type: "button", className: "button ghost", text: "View case and audit" });
+        view.addEventListener("click", () => showInvestigation(action.investigation_id)); card.append(view);
+        if (execution?.error) card.append(detailField("Recovery detail", execution.error));
+        if (item.verification) card.append(detailField("Last independent check", item.verification.succeeded ? "Membership and operation receipt verified" : "Postcondition not verified"), node("pre", { className: "literal-json", text: JSON.stringify(item.verification.details || {}, null, 2) }));
+        let path = "", label = "";
+        if (payload.enabled && approval.status === "GRANTED" && !execution) { path = `/v1/admin/test-executions/approvals/${encodeURIComponent(approval.id)}/queue`; label = "Queue approved test execution"; }
+        if (payload.enabled && ["FAILED", "NEEDS_RECONCILIATION"].includes(execution?.status)) { path = `/v1/admin/test-executions/${encodeURIComponent(execution.id)}/verify`; label = "Verify again — read only"; }
+        if (path) {
+          const form = node("form", { className: "action-detail case-command" });
+          const actor = node("input", { required: true, value: state.actor, maxLength: 256, placeholder: "Operator name", "aria-label": "Operator name" });
+          const reason = node("input", { required: true, maxLength: 1000, placeholder: "Reason", "aria-label": "Reason" });
+          const error = node("p", { className: "form-error", role: "alert" });
+          const submit = node("button", { type: "submit", className: "button", text: label });
+          form.append(actor, reason, error, submit);
+          form.addEventListener("submit", async (event) => {
+            event.preventDefault(); if (submit.disabled) return;
+            const command = { actor: actor.value.trim(), reason: reason.value.trim() };
+            if (!command.actor || !command.reason) { error.textContent = "Operator name and reason are required."; return; }
+            command.request_id = commandKey(form, command); submit.disabled = true; error.textContent = "";
+            const commandToken = state.token, commandRevision = testExecutionRevision;
+            try {
+              await api(path, { method: "POST", body: JSON.stringify(command) });
+              if (state.token !== commandToken || testExecutionRevision !== commandRevision) return;
+              state.actor = command.actor; sessionStorage.setItem("wardstone.operatorActor", command.actor); await loadTestExecutions();
+            } catch (failure) { if (state.token === commandToken && testExecutionRevision === commandRevision) error.textContent = failure.message; }
+            finally { submit.disabled = false; }
+          });
+          card.append(form);
+        }
+        list.append(card);
+      }
+    } catch (error) { if (revision === testExecutionRevision && token === state.token) byId("test-execution-error").textContent = error.message; }
+  }
+
+  async function proposeTestExecution(event) {
+    event.preventDefault(); const form = byId("test-proposal-form"), button = byId("test-proposal-submit"), error = byId("test-proposal-error");
+    if (button.disabled) return;
+    const payload = { actor: byId("test-actor").value.trim(), reason: byId("test-reason").value.trim(), group: byId("test-group").value.trim(), member: byId("test-member").value.trim() };
+    if (!payload.actor || !payload.reason || !/^test-[a-z0-9][a-z0-9_-]{0,58}$/.test(payload.group) || !/^test-[a-z0-9][a-z0-9_-]{0,58}$/.test(payload.member)) { error.textContent = "Operator, reason, and synthetic names starting with test- are required."; return; }
+    payload.request_id = commandKey(form, payload); const token = state.token, revision=++proposalRevision;
+    button.disabled = true; error.textContent = "";
+    try {
+      await api("/v1/admin/test-executions", { method: "POST", body: JSON.stringify(payload) });
+      if (token !== state.token || revision!==proposalRevision) return;
+      state.actor = payload.actor; sessionStorage.setItem("wardstone.operatorActor", payload.actor);
+      form.commandFingerprint = ""; byId("test-reason").value = "";
+      await loadDashboard({ quiet: true });
+      showToast("Test action proposed. Review its exact arguments in the approval queue.");
+    } catch (failure) { if (token === state.token && revision===proposalRevision) error.textContent = failure.message + " Retry unchanged input to safely check the same request."; }
+    finally { if (token === state.token && revision===proposalRevision) button.disabled = false; }
+  }
+
+  function commandKey(form, payload) {
+    const fingerprint = JSON.stringify(payload, (_key, value) => value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value);
+    if (form.commandFingerprint !== fingerprint) {
+      form.commandFingerprint = fingerprint;
+      form.commandRequestID = globalThis.crypto?.randomUUID?.() || `request-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+    return form.commandRequestID;
+  }
+
+  async function createOperatorCase(event) {
+    event.preventDefault();
+    const form = byId("create-case-form"), button = byId("case-create-submit"), error = byId("case-create-error");
+    if (button.disabled) return;
+    const actor = byId("case-actor").value.trim();
+    let fields = {};
+    try {
+      fields = JSON.parse(byId("case-fields").value || "{}");
+      if (!fields || typeof fields !== "object" || Array.isArray(fields) || Object.values(fields).some((values) => !Array.isArray(values) || values.some((value) => typeof value !== "string"))) throw new Error();
+      if ((byId("case-vendor").value.trim() && Object.hasOwn(fields, "Vendor")) || (byId("case-topic").value.trim() && Object.hasOwn(fields, "Knowledge topic"))) throw new Error();
+    } catch (_) { error.textContent = "Additional fields must be a JSON object mapping names to arrays of strings. Set vendor and knowledge topic in only one place."; return; }
+    if (byId("case-vendor").value.trim()) fields.Vendor = [byId("case-vendor").value.trim()];
+    if (byId("case-topic").value.trim()) fields["Knowledge topic"] = [byId("case-topic").value.trim()];
+    const payload = { actor, reason: byId("case-reason").value.trim(), summary: byId("case-summary").value.trim(), description: byId("case-description").value, metadata: { request_type: byId("case-request-type").value.trim(), fields } };
+    if (!payload.actor || !payload.reason || !payload.summary) { error.textContent = "Operator name, summary, and reason are required."; return; }
+    payload.request_id = commandKey(form, payload);
+    const token = state.token, revision=++createCaseRevision, openedAt=detailRevision;
+    error.textContent = ""; button.disabled = true;
+    try {
+      const result = await api("/v1/admin/cases", { method: "POST", body: JSON.stringify(payload) });
+      if (state.token !== token || revision!==createCaseRevision) return;
+      state.actor = actor; sessionStorage.setItem("wardstone.operatorActor", actor);
+      form.commandFingerprint = "";
+      for (const [id,value] of [["case-summary",payload.summary],["case-description",payload.description],["case-reason",payload.reason]]) if(byId(id).value.trim()===value.trim()) byId(id).value="";
+      await loadDashboard({ quiet: true });
+      if(openedAt===detailRevision && revision===createCaseRevision) await showInvestigation(result.investigation_id);
+    } catch (failure) { if (state.token === token && revision===createCaseRevision) error.textContent = failure.message + " Retry unchanged input to safely check the same request."; }
+    finally { if (state.token === token && revision===createCaseRevision) button.disabled = false; }
+  }
+
+  function caseControls(investigation, payload, id) {
+    const card = node("section", { className: "report-card" });
+    if (!Array.isArray(payload.attempts)) return card;
+    const ticket = payload.ticket || {};
+    card.append(node("h3", { text: "Case and attempts" }), detailField("Origin", ticket.source || "Unknown"), node("p", { className: "detail-copy", text: ticket.summary || "" }));
+    const attempts = node("div", { className: "feature-list" });
+    for (const attempt of payload.attempts) {
+      const button = node("button", { className: "button ghost", type: "button", text: `${attempt.id === id ? "Current · " : ""}${attempt.status} · ${attempt.id}` });
+      button.disabled = attempt.id === id;
+      button.addEventListener("click", () => showInvestigation(attempt.id));
+      attempts.append(button);
+    }
+    card.append(attempts);
+    const child = payload.attempts.some((attempt) => attempt.parent_id === id);
+    let operation = "", label = "";
+    if (["PENDING", "RUNNING", "WAITING_ON_REQUESTER"].includes(investigation.status)) { operation = "cancel"; label = "Cancel investigation"; }
+    else if (["FAILED", "CANCELLED"].includes(investigation.status) && !child && payload.runs_enabled) { operation = "retry"; label = "Retry as a new attempt"; }
+    const addCommand = (op, buttonLabel, reply = false) => {
+      const form = node("form", { className: "action-detail case-command" });
+      const actor = node("input", { value: state.actor, maxLength: 256, required: true, placeholder: "Operator name", "aria-label": "Operator name" });
+      const reason = node("input", { maxLength: 1000, required: true, placeholder: "Reason", "aria-label": "Reason" });
+      const body = node("textarea", { rows: 3, maxLength: 16000, required: true, "aria-label": "Reply to investigation" });
+      const error = node("p", { className: "form-error", role: "alert" });
+      const submit = node("button", { className: "button", type: "submit", text: buttonLabel });
+      form.append(actor, reason);
+      if (reply) form.append(node("label", { text: "Reply to the outstanding question" }), body);
+      form.append(error, submit);
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault(); if (submit.disabled) return;
+        const command = { actor: actor.value.trim(), reason: reason.value.trim() };
+        if (reply) command.body = body.value;
+        if (!command.actor || !command.reason || (reply && !command.body.trim())) { error.textContent = "Operator name, reason, and any required reply are required."; return; }
+        command.request_id = commandKey(form, command);
+        const revision = detailRevision, token = state.token;
+        submit.disabled = true; error.textContent = "";
+        try {
+          const result = await api(`/v1/admin/investigations/${encodeURIComponent(id)}/${op}`, { method: "POST", body: JSON.stringify(command) });
+          if (detailRevision !== revision || state.token !== token) return;
+          state.actor = command.actor; sessionStorage.setItem("wardstone.operatorActor", command.actor);
+          await showInvestigation(result.investigation_id || id); loadDashboard({ quiet: true });
+        } catch (failure) { if (detailRevision === revision && state.token === token) error.textContent = failure.message + " Retry unchanged input to safely check the same request."; }
+        finally { submit.disabled = false; }
+      });
+      card.append(form);
+    };
+    if (operation) {
+      card.append(node("p", { className: "detail-note", text: operation === "cancel" ? "Cancellation stops investigation writes and unsent messages. Already claimed sends may still finish; their recorded outcomes remain available." : "A retry uses current configuration and fresh evidence. Previous attempts, drafts, and audit history remain available." }));
+      addCommand(operation, label);
+    }
+    if (ticket.source === "operator" && investigation.status === "WAITING_ON_REQUESTER" && payload.runs_enabled) addCommand("reply", "Submit reply and continue", true);
+    return card;
   }
 
   function evidenceIndex(events) {
@@ -309,8 +477,11 @@
     const data = event.data || {};
     citation.append(node("small", { text: `Source: ${event.actor_type === "CONNECTOR" ? event.actor_id || "unknown" : "unknown"} · Capability: ${data.capability || "not recorded"} · Kind: ${data.kind || "not recorded"}` }), node("small", { text: `Observed: ${data.observed_at || "not recorded"} · ${observationFreshness(data.observed_at)}` }));
     if (data.title) citation.append(node("small", { text: `Document: ${data.title}` }));
+    if (data.format === "pdf") citation.append(node("small", { text: `PDF${Number.isInteger(data.page_number) && data.page_number > 0 ? ` · Page ${data.page_number} of ${data.page_count || "unknown"}` : ""}${data.extraction_method ? ` · ${data.extraction_method}` : ""}` }));
+    if (data.kind === "research.document_unavailable") citation.append(node("small", { text: `Evidence gap: ${humanize(data.status || "unavailable")} · Operator review required` }));
+    if (Array.isArray(data.affected_pages) && data.affected_pages.length) citation.append(node("small", { text: `Affected pages: ${data.affected_pages.join(", ")}` }));
     if (data.source_url) citation.append(node("small", { text: `Source URL: ${data.source_url}` }));
-    if (data.content_sha256) citation.append(node("small", { text: `Content SHA-256: ${data.content_sha256}` }));
+    if (data.content_sha256) citation.append(node("small", { text: `${data.format === "pdf" ? "Original file" : "Content"} SHA-256: ${data.content_sha256}` }));
     if (data.claim_type) citation.append(node("small", { text: `Evidence type: ${data.claim_type}${data.truncated ? " · excerpt truncated" : ""}` }));
     return citation;
   }
@@ -387,26 +558,27 @@
     return card;
   }
 
-  function conversationCard(payload, investigationID, status) {
-    const card = node("section", { className: "conversation-card" }, [node("h3", { text: "Requester conversation" }), node("p", { className: "detail-note", text: "Outbound messages are drafts in SHADOW mode. In REVIEW mode, an operator approves the exact message to send. Delivery status is recorded separately." })]);
-    const refresh = node("button", { type: "button", className: "button button-secondary", text: "Refresh delivery status" });
+  function conversationCard(payload, investigationID, status, origin) {
+    const internal=origin==="operator"||(payload.messages||[]).some((m)=>m.source==="operator");
+    const card = node("section", { className: "conversation-card" }, [node("h3", { text: internal ? "Internal case conversation" : "Requester conversation" }), node("p", { className: "detail-note", text: internal ? "This conversation stays in the console. Reply to outstanding questions using the case controls above." : "Outbound messages are drafts in SHADOW mode. In REVIEW mode, an operator approves the exact message to send. Delivery status is recorded separately." })]);
+    const refresh = node("button", { type: "button", className: "button button-secondary", text: internal ? "Refresh conversation" : "Refresh delivery status" });
     refresh.addEventListener("click", () => showInvestigation(investigationID));
     card.append(refresh);
     if (payload.error) card.append(node("p", { className: "detail-copy", text: payload.error }));
     else if (!payload.messages?.length) card.append(node("p", { className: "detail-copy", text: "No messages recorded." }));
     for (const message of payload.messages || []) {
-      const article = node("article", { className: "message-detail" }, [node("h4", { text: message.direction === "OUTBOUND" ? "Wardstone outbound / draft" : message.direction === "INBOUND" ? "Requester reply" : "Message" }), node("small", { className: "detail-copy", text: `${formatDate(message.created_at)} · ${message.author || "Unknown author"} · ${message.source || "Unknown source"}` }), node("p", { className: "detail-copy", text: message.body })]);
+      const article = node("article", { className: "message-detail" }, [node("h4", { text: message.direction === "OUTBOUND" ? "Wardstone outbound / draft" : message.direction === "INBOUND" ? (message.source === "operator" ? "Operator reply" : "Requester reply") : "Message" }), node("small", { className: "detail-copy", text: `${formatDate(message.created_at)} · ${message.author || "Unknown author"} · ${message.source || "Unknown source"}` }), node("p", { className: "detail-copy", text: message.body })]);
       const delivery = (payload.deliveries || []).find((item) => item.message_id === message.id);
       if (delivery) {
         article.append(detailField("Delivery", humanize(delivery.status)), detailField("Send attempts", String(delivery.attempt || 0)), detailField("Reviewed by", delivery.reviewed_by), detailField("Remote comment", delivery.remote_id));
         if (delivery.reviewed_body) article.append(node("h4", { text: "Approved message" }), node("p", { className: "detail-copy", text: delivery.reviewed_body }));
         if (delivery.last_error) article.append(node("p", { className: "detail-note", text: `Last send error: ${delivery.last_error}` }));
         if (delivery.status === "SUPERSEDED") article.append(node("p", { className: "detail-note", text: "A newer message or case state superseded this draft before sending. It cannot be resent." }));
-        if (payload.recovery_enabled && delivery.reviewed_at && ["NEEDS_RECONCILIATION", "FAILED"].includes(delivery.status)) {
+        if (message.source === "jira" && payload.recovery_enabled && delivery.reviewed_at && ["NEEDS_RECONCILIATION", "FAILED"].includes(delivery.status)) {
           const canResend = message.id === payload.messages.at(-1)?.id && ["WAITING_ON_REQUESTER", "COMPLETED"].includes(status);
           article.append(recoveryForm(investigationID, message.id, delivery, canResend));
         }
-      } else if (payload.review_enabled && message.direction === "OUTBOUND" && message.id === payload.messages.at(-1)?.id && ["WAITING_ON_REQUESTER", "COMPLETED"].includes(status)) {
+      } else if (message.source === "jira" && payload.review_enabled && message.direction === "OUTBOUND" && message.id === payload.messages.at(-1)?.id && ["WAITING_ON_REQUESTER", "COMPLETED"].includes(status)) {
         const body = node("textarea", { id: `review-body-${message.id}`, rows: 6, maxLength: 16000, required: true, value: message.body });
         const actor = node("input", { id: `review-actor-${message.id}`, required: true, maxLength: 256, value: state.actor, placeholder: "you@example.com" });
         const button = node("button", { className: "button", type: "submit", text: "Approve and send to Jira" });
@@ -590,8 +762,13 @@
   }
 
   function disconnect() {
+    dashboardRevision++;createCaseRevision++;proposalRevision++;
+    byId("case-create-submit").disabled=false;byId("test-proposal-submit").disabled=false;
     detailRevision++;
     setupRevision++;
+    testExecutionRevision++;
+    byId("test-execution").hidden = true;
+    byId("test-execution-list").replaceChildren();
     activeSetupProbe = "";
     state.token = "";
     state.investigations = [];
@@ -668,6 +845,12 @@
     link.classList.add("active");
   }));
   document.addEventListener("visibilitychange", () => { if (!document.hidden && state.token) loadDashboard({ quiet: true }); });
+
+  byId("test-execution-refresh").addEventListener("click", loadTestExecutions);
+  byId("test-proposal-form").addEventListener("submit", proposeTestExecution);
+  byId("test-actor").value = state.actor;
+  byId("create-case-form").addEventListener("submit", createOperatorCase);
+  byId("case-actor").value = state.actor;
 
   checkHealth();
   setInterval(checkHealth, 30000);

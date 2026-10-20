@@ -1,0 +1,2 @@
+# Preserve generated PDF byte offsets and keep document fixtures out of text diffs.
+internal/connectors/research/testdata/*.pdf binary

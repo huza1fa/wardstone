@@ -104,6 +104,8 @@ func TestCaseMemoryMigrationPreservesUnknownLegacyProvenance(t *testing.T) {
 		}
 	}
 
+	apply("000011_operator_cases.sql")
+	apply("000012_test_execution.sql")
 	if err := CheckSchema(ctx, pool); err != nil {
 		t.Fatalf("upgraded schema: %v", err)
 	}
@@ -117,7 +119,7 @@ func TestCaseMemoryMigrationPreservesUnknownLegacyProvenance(t *testing.T) {
 		t.Fatalf("migration disclosed unstamped observations: %+v err=%v", got, err)
 	}
 	item, err := store.GetInvestigation(ctx, id)
-	if err != nil || item.WorkPackage != nil || item.Diagnosis != "Legacy diagnosis remains readable" {
+	if err != nil || item.WorkPackage != nil || item.Diagnosis != "Legacy diagnosis remains readable" || item.CaseID != id || item.ParentID != "" {
 		t.Fatalf("migration changed legacy detail: %+v err=%v", item, err)
 	}
 	var indexExists bool

@@ -12,9 +12,11 @@ import (
 
 	"github.com/wardstone-project/wardstone/internal/admin"
 	"github.com/wardstone-project/wardstone/internal/audit"
+	"github.com/wardstone-project/wardstone/internal/cases"
 	"github.com/wardstone-project/wardstone/internal/connectors/jira"
 	"github.com/wardstone-project/wardstone/internal/delivery"
 	"github.com/wardstone-project/wardstone/internal/domain"
+	"github.com/wardstone-project/wardstone/internal/executor"
 	"github.com/wardstone-project/wardstone/internal/investigations"
 )
 
@@ -50,20 +52,26 @@ type SetupService interface {
 }
 
 type Server struct {
-	service        InvestigationService
-	reader         InvestigationReader
-	adminReader    AdminReader
-	approvals      ApprovalService
-	conversations  ConversationService
-	routingPreview RoutingPreviewer
-	setup          SetupService
-	recovery       MessageRecoveryService
-	reviews        MessageReviewService
-	reviewEnabled  bool
-	mode           domain.OperatingMode
-	webhookSecret  string
-	operatorToken  string
-	now            func() time.Time
+	testExecution        executor.Store
+	testExecutionEnabled bool
+	testApprovalLifetime time.Duration
+	cases                cases.Store
+	casePrompt           string
+	caseRunsEnabled      bool
+	service              InvestigationService
+	reader               InvestigationReader
+	adminReader          AdminReader
+	approvals            ApprovalService
+	conversations        ConversationService
+	routingPreview       RoutingPreviewer
+	setup                SetupService
+	recovery             MessageRecoveryService
+	reviews              MessageReviewService
+	reviewEnabled        bool
+	mode                 domain.OperatingMode
+	webhookSecret        string
+	operatorToken        string
+	now                  func() time.Time
 }
 
 func WithSetup(service SetupService) Option {
@@ -132,6 +140,15 @@ func NewServer(service InvestigationService, reader InvestigationReader, webhook
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /v1/admin/test-executions", s.listTestExecutions)
+	mux.HandleFunc("POST /v1/admin/test-executions", s.proposeTestExecution)
+	mux.HandleFunc("POST /v1/admin/test-executions/approvals/{id}/queue", s.queueTestExecution)
+	mux.HandleFunc("POST /v1/admin/test-executions/{id}/verify", s.recheckTestExecution)
+	mux.HandleFunc("POST /v1/admin/cases", s.createCase)
+	mux.HandleFunc("GET /v1/admin/investigations/{id}/case", s.getCase)
+	mux.HandleFunc("POST /v1/admin/investigations/{id}/cancel", s.cancelCase)
+	mux.HandleFunc("POST /v1/admin/investigations/{id}/retry", s.retryCase)
+	mux.HandleFunc("POST /v1/admin/investigations/{id}/reply", s.replyToCase)
 	mux.HandleFunc("POST /v1/tickets/jira", s.receiveJira)
 	mux.HandleFunc("POST /v1/tickets/jira/replies", s.receiveJiraReply)
 	mux.HandleFunc("GET /v1/investigations/{id}", s.getInvestigation)

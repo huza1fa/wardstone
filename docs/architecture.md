@@ -156,7 +156,7 @@ PostgreSQL stores:
 - `message_deliveries`, a transactional requester-message outbox with leases,
   bounded attempts, remote IDs, and delivery state.
 
-The runtime requires schema versions 1 through **10**. Migration 8 adds evidence
+The runtime requires schema versions 1 through **12**. Migration 8 adds evidence
 capability provenance and a newest-first case/capability index; it leaves legacy
 provenance empty rather than guessing from connector or kind. It also adds the
 optional `investigations.work_package`, publishable only in the
@@ -474,9 +474,13 @@ See [operator recovery and API examples](development.md#jira-delivery-recovery).
 The research connector registers separate vendor and knowledge read capabilities.
 Each selects from an administrator-owned catalog using an exact structured field
 or a whole authenticated requester reply. Neither ticket URLs nor model output
-can choose fetch targets. Vendor catalogs permit public HTTPS text; knowledge
-catalogs also permit configured Markdown/plain-text files resolved relative to
-the policy file. Public HTTP uses no credentials, proxy, or redirects and checks
+can choose fetch targets. Both catalogs permit public HTTPS text and configured
+PDF/Markdown/plain-text files resolved relative to the policy file. Confined local
+reads reject escaping symlinks and nonregular files. PDF parsing runs in mandatory
+Linux namespace isolation without network, server environment, or source-path
+access, with deadlines and process/output budgets. Each readable page is a
+separate observation tied to the complete original file hash. Missing text pages,
+parser failures, and exceeded budgets remain explicit gaps; no OCR is inferred. Public HTTP uses no credentials, proxy, or redirects and checks
 resolved addresses at the actual dial boundary. Documents have count, download,
 and excerpt budgets; unavailable sources remain explicit gaps.
 
@@ -574,3 +578,29 @@ on a separate administrative listener. Concurrency-sensitive packages run under
 `go test -race`. Benchmarks should target policy evaluation, capability lookup,
 action digesting, audit serialization, and job claiming; remote API latency is
 measured with integration telemetry rather than CPU benchmarks.
+
+### Operator cases and synthetic execution
+
+Migration 11 adds root/parent investigation links and transactional command
+receipts. A case is an original investigation with a linear chain of fresh
+attempts; IDs and evidence on older attempts remain unchanged. Row locks serialize
+cancellation, completion, replies, retry creation, and worker lease takeover.
+Workers validate their lease after acquiring the case lock. Cancellation revokes worker
+leases and pending deliveries, while already claimed sends retain their actual
+outcomes. The queue retires exhausted leases and marks abandoned active attempts
+FAILED even when no other job is claimable.
+
+Migration 12 binds the opt-in synthetic execution pilot to an exact approved
+action and one execution per action. RUNNING recovery reuses connector receipts;
+VERIFYING recovery only reads independently persisted membership/receipt state.
+Expired grants cannot start pending work, stale group versions fail, and recovery
+is capped at three claims before reconciliation is required. This executor is
+installed only with `test.groups.add_member`; it is separate from infrastructure
+mode evaluation, which continues to deny mutations in SHADOW and REVIEW.
+
+The evaluation CLI has no store or mutation adapters. It grades bounded saved
+final-report cases, using shared `FinalizeReport` validation and Go risk scoring.
+A provider generation method exposes parsed responses to the grader before the
+normal live-provider citation rejection; live investigations still use the
+validated `Diagnose` entry point. Offline fixtures are the default, and live
+comparison requires an explicit flag. See the [operator guide](operator-guide.md).

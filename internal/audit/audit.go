@@ -80,14 +80,38 @@ func EvidenceData(item domain.Evidence) map[string]any {
 	result := map[string]any{"evidence_id": item.ID, "capability": item.Capability, "kind": item.Kind, "observed_at": item.ObservedAt}
 	if item.Source == "research" {
 		var document struct {
-			Title     string `json:"title"`
-			URL       string `json:"url"`
-			Digest    string `json:"content_sha256"`
-			ClaimType string `json:"claim_type"`
-			Truncated bool   `json:"truncated"`
+			Title         string `json:"title"`
+			URL           string `json:"url"`
+			Digest        string `json:"content_sha256"`
+			ClaimType     string `json:"claim_type"`
+			Truncated     bool   `json:"truncated"`
+			Format        string `json:"format"`
+			Page          int    `json:"page_number"`
+			Pages         int    `json:"page_count"`
+			Status        string `json:"status"`
+			Method        string `json:"extraction_method"`
+			AffectedPages []int  `json:"affected_pages"`
 		}
 		if json.Unmarshal(item.Data, &document) == nil {
 			result["title"], result["source_url"], result["content_sha256"], result["claim_type"], result["truncated"] = document.Title, document.URL, document.Digest, document.ClaimType, document.Truncated
+			if document.Format != "" {
+				result["format"] = document.Format
+			}
+			if document.Page > 0 {
+				result["page_number"] = document.Page
+			}
+			if document.Pages > 0 {
+				result["page_count"] = document.Pages
+			}
+			if document.Status != "" {
+				result["status"] = document.Status
+			}
+			if document.Method != "" {
+				result["extraction_method"] = document.Method
+			}
+			if len(document.AffectedPages) > 0 {
+				result["affected_pages"] = document.AffectedPages
+			}
 		}
 	}
 	return result
