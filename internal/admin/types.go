@@ -100,6 +100,8 @@ type SetupComponent struct {
 }
 
 type RuntimeFeatures struct {
+	OperatorCases     bool `json:"operator_cases"`
+	TestExecution     bool `json:"test_execution"`
 	JiraIntake        bool `json:"jira_intake"`
 	Investigations    bool `json:"investigations"`
 	GoogleEvidence    bool `json:"google_evidence"`

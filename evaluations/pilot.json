@@ -1,0 +1,841 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "complete-scoped-review",
+      "request": {
+        "InvestigationID": "eval-complete-scoped-review",
+        "Ticket": {
+          "id": "ticket-complete-scoped-review",
+          "source": "operator",
+          "external_id": "complete-scoped-review",
+          "summary": "Review synthetic Acme evidence",
+          "metadata": {
+            "fields": {
+              "Vendor": [
+                "Acme"
+              ]
+            }
+          }
+        },
+        "Evidence": [
+          {
+            "id": "vendor-page-1",
+            "source": "research",
+            "capability": "research.vendor.collect",
+            "kind": "research.vendor_document",
+            "summary": "Synthetic fixture document",
+            "observed_at": "2026-10-19T20:00:00Z",
+            "data": {
+              "resource": "acme",
+              "claim_type": "vendor_claim",
+              "content": "The vendor states that administrators use SSO and MFA."
+            }
+          },
+          {
+            "id": "audit-page-2",
+            "source": "research",
+            "capability": "research.vendor.collect",
+            "kind": "research.vendor_document",
+            "summary": "Synthetic fixture document",
+            "observed_at": "2026-10-19T20:00:00Z",
+            "data": {
+              "resource": "acme",
+              "claim_type": "independent_report",
+              "content": "Synthetic auditor found partially effective scoped controls.",
+              "format": "pdf",
+              "page_number": 2,
+              "page_count": 2
+            }
+          }
+        ],
+        "specialist": "vendor_review",
+        "instructions": "Review the supplied synthetic evidence and scope.",
+        "permitted_actions": [],
+        "handoff_targets": [],
+        "vendor_review": {
+          "vendor": "acme",
+          "rubric": {
+            "version": "synthetic-v1",
+            "moderate_at": 25,
+            "high_at": 60,
+            "criteria": [
+              {
+                "id": "identity",
+                "requirement": "Identity controls match the declared scope.",
+                "weight": 40,
+                "evidence": "vendor_claim"
+              },
+              {
+                "id": "assurance",
+                "requirement": "Independent assurance covers the declared scope.",
+                "weight": 60,
+                "evidence": "independent_report"
+              }
+            ]
+          },
+          "deployment": {
+            "use_case": "Synthetic internal documentation",
+            "data_classification": "Internal",
+            "access_scope": "Read only"
+          }
+        },
+        "response_constraint": "final_report"
+      },
+      "recorded_result": {
+        "diagnosis": "Synthetic source review",
+        "work_package": {
+          "version": 1,
+          "summary": "Synthetic control review",
+          "findings": [
+            {
+              "kind": "vendor_claim",
+              "statement": "The vendor describes administrator SSO and MFA.",
+              "evidence_ids": [
+                "vendor-page-1"
+              ]
+            }
+          ],
+          "unknowns": [],
+          "requester_summary": "Synthetic review for an operator."
+        },
+        "vendor_assessment": {
+          "criteria": [
+            {
+              "id": "identity",
+              "status": "met",
+              "reason": "The vendor states the scoped identity requirements.",
+              "evidence_ids": [
+                "vendor-page-1"
+              ]
+            },
+            {
+              "id": "assurance",
+              "status": "partial",
+              "reason": "The designated report describes limited scoped assurance.",
+              "evidence_ids": [
+                "audit-page-2"
+              ]
+            }
+          ]
+        }
+      },
+      "expect": {
+        "rating": "MODERATE",
+        "forbidden_phrases": [
+          "SOC 2 certified",
+          "controls are guaranteed"
+        ],
+        "require_unknowns": false
+      }
+    },
+    {
+      "name": "missing-independent-report",
+      "request": {
+        "InvestigationID": "eval-missing-independent-report",
+        "Ticket": {
+          "id": "ticket-missing-independent-report",
+          "source": "operator",
+          "external_id": "missing-independent-report",
+          "summary": "Review synthetic Acme evidence",
+          "metadata": {
+            "fields": {
+              "Vendor": [
+                "Acme"
+              ]
+            }
+          }
+        },
+        "Evidence": [
+          {
+            "id": "vendor-page-1",
+            "source": "research",
+            "capability": "research.vendor.collect",
+            "kind": "research.vendor_document",
+            "summary": "Synthetic fixture document",
+            "observed_at": "2026-10-19T20:00:00Z",
+            "data": {
+              "resource": "acme",
+              "claim_type": "vendor_claim",
+              "content": "The vendor states that administrators use SSO and MFA."
+            }
+          }
+        ],
+        "specialist": "vendor_review",
+        "instructions": "Review the supplied synthetic evidence and scope.",
+        "permitted_actions": [],
+        "handoff_targets": [],
+        "vendor_review": {
+          "vendor": "acme",
+          "rubric": {
+            "version": "synthetic-v1",
+            "moderate_at": 25,
+            "high_at": 60,
+            "criteria": [
+              {
+                "id": "identity",
+                "requirement": "Identity controls match the declared scope.",
+                "weight": 40,
+                "evidence": "vendor_claim"
+              },
+              {
+                "id": "assurance",
+                "requirement": "Independent assurance covers the declared scope.",
+                "weight": 60,
+                "evidence": "independent_report"
+              }
+            ]
+          },
+          "deployment": {
+            "use_case": "Synthetic internal documentation",
+            "data_classification": "Internal",
+            "access_scope": "Read only"
+          }
+        },
+        "response_constraint": "final_report"
+      },
+      "recorded_result": {
+        "diagnosis": "Synthetic source review",
+        "work_package": {
+          "version": 1,
+          "summary": "Synthetic control review",
+          "findings": [
+            {
+              "kind": "vendor_claim",
+              "statement": "The vendor describes administrator SSO and MFA.",
+              "evidence_ids": [
+                "vendor-page-1"
+              ]
+            }
+          ],
+          "unknowns": [
+            "Independent assurance is unavailable."
+          ],
+          "requester_summary": "Synthetic review for an operator."
+        },
+        "vendor_assessment": {
+          "criteria": [
+            {
+              "id": "identity",
+              "status": "met",
+              "reason": "The vendor states the scoped identity requirements.",
+              "evidence_ids": [
+                "vendor-page-1"
+              ]
+            },
+            {
+              "id": "assurance",
+              "status": "unknown",
+              "reason": "No independent assurance was supplied.",
+              "evidence_ids": []
+            }
+          ]
+        }
+      },
+      "expect": {
+        "rating": "UNKNOWN",
+        "forbidden_phrases": [
+          "SOC 2 certified",
+          "controls are guaranteed"
+        ],
+        "require_unknowns": true
+      }
+    },
+    {
+      "name": "truncated-document",
+      "request": {
+        "InvestigationID": "eval-truncated-document",
+        "Ticket": {
+          "id": "ticket-truncated-document",
+          "source": "operator",
+          "external_id": "truncated-document",
+          "summary": "Review synthetic Acme evidence",
+          "metadata": {
+            "fields": {
+              "Vendor": [
+                "Acme"
+              ]
+            }
+          }
+        },
+        "Evidence": [
+          {
+            "id": "vendor-page-1",
+            "source": "research",
+            "capability": "research.vendor.collect",
+            "kind": "research.vendor_document",
+            "summary": "Synthetic fixture document",
+            "observed_at": "2026-10-19T20:00:00Z",
+            "data": {
+              "resource": "acme",
+              "claim_type": "vendor_claim",
+              "content": "The vendor states that administrators use SSO and MFA.",
+              "truncated": true
+            }
+          },
+          {
+            "id": "audit-page-2",
+            "source": "research",
+            "capability": "research.vendor.collect",
+            "kind": "research.vendor_document",
+            "summary": "Synthetic fixture document",
+            "observed_at": "2026-10-19T20:00:00Z",
+            "data": {
+              "resource": "acme",
+              "claim_type": "independent_report",
+              "content": "Synthetic auditor found partially effective scoped controls.",
+              "format": "pdf",
+              "page_number": 2,
+              "page_count": 2
+            }
+          }
+        ],
+        "specialist": "vendor_review",
+        "instructions": "Review the supplied synthetic evidence and scope.",
+        "permitted_actions": [],
+        "handoff_targets": [],
+        "vendor_review": {
+          "vendor": "acme",
+          "rubric": {
+            "version": "synthetic-v1",
+            "moderate_at": 25,
+            "high_at": 60,
+            "criteria": [
+              {
+                "id": "identity",
+                "requirement": "Identity controls match the declared scope.",
+                "weight": 40,
+                "evidence": "vendor_claim"
+              },
+              {
+                "id": "assurance",
+                "requirement": "Independent assurance covers the declared scope.",
+                "weight": 60,
+                "evidence": "independent_report"
+              }
+            ]
+          },
+          "deployment": {
+            "use_case": "Synthetic internal documentation",
+            "data_classification": "Internal",
+            "access_scope": "Read only"
+          }
+        },
+        "response_constraint": "final_report"
+      },
+      "recorded_result": {
+        "diagnosis": "Synthetic source review",
+        "work_package": {
+          "version": 1,
+          "summary": "Synthetic control review",
+          "findings": [
+            {
+              "kind": "vendor_claim",
+              "statement": "The vendor describes administrator SSO and MFA.",
+              "evidence_ids": [
+                "vendor-page-1"
+              ]
+            }
+          ],
+          "unknowns": [
+            "The vendor document excerpt is truncated."
+          ],
+          "requester_summary": "Synthetic review for an operator."
+        },
+        "vendor_assessment": {
+          "criteria": [
+            {
+              "id": "identity",
+              "status": "met",
+              "reason": "The vendor states the scoped identity requirements.",
+              "evidence_ids": [
+                "vendor-page-1"
+              ]
+            },
+            {
+              "id": "assurance",
+              "status": "partial",
+              "reason": "The designated report describes limited scoped assurance.",
+              "evidence_ids": [
+                "audit-page-2"
+              ]
+            }
+          ]
+        }
+      },
+      "expect": {
+        "rating": "UNKNOWN",
+        "forbidden_phrases": [
+          "SOC 2 certified",
+          "controls are guaranteed"
+        ],
+        "require_unknowns": true
+      }
+    },
+    {
+      "name": "scanned-pdf-gap",
+      "request": {
+        "InvestigationID": "eval-scanned-pdf-gap",
+        "Ticket": {
+          "id": "ticket-scanned-pdf-gap",
+          "source": "operator",
+          "external_id": "scanned-pdf-gap",
+          "summary": "Review synthetic Acme evidence",
+          "metadata": {
+            "fields": {
+              "Vendor": [
+                "Acme"
+              ]
+            }
+          }
+        },
+        "Evidence": [
+          {
+            "id": "vendor-page-1",
+            "source": "research",
+            "capability": "research.vendor.collect",
+            "kind": "research.vendor_document",
+            "summary": "Synthetic fixture document",
+            "observed_at": "2026-10-19T20:00:00Z",
+            "data": {
+              "resource": "acme",
+              "claim_type": "vendor_claim",
+              "content": "The vendor states that administrators use SSO and MFA."
+            }
+          },
+          {
+            "id": "audit-page-2",
+            "source": "research",
+            "capability": "research.vendor.collect",
+            "kind": "research.vendor_document",
+            "summary": "Synthetic fixture document",
+            "observed_at": "2026-10-19T20:00:00Z",
+            "data": {
+              "resource": "acme",
+              "claim_type": "independent_report",
+              "content": "Synthetic auditor found partially effective scoped controls.",
+              "format": "pdf",
+              "page_number": 2,
+              "page_count": 2
+            }
+          },
+          {
+            "id": "scanned-pages",
+            "source": "research",
+            "capability": "research.vendor.collect",
+            "kind": "research.document_unavailable",
+            "summary": "PDF has no extractable text on a page.",
+            "data": {
+              "resource": "acme",
+              "format": "pdf",
+              "status": "pdf_pages_without_text",
+              "affected_pages": [
+                3
+              ]
+            }
+          }
+        ],
+        "specialist": "vendor_review",
+        "instructions": "Review the supplied synthetic evidence and scope.",
+        "permitted_actions": [],
+        "handoff_targets": [],
+        "vendor_review": {
+          "vendor": "acme",
+          "rubric": {
+            "version": "synthetic-v1",
+            "moderate_at": 25,
+            "high_at": 60,
+            "criteria": [
+              {
+                "id": "identity",
+                "requirement": "Identity controls match the declared scope.",
+                "weight": 40,
+                "evidence": "vendor_claim"
+              },
+              {
+                "id": "assurance",
+                "requirement": "Independent assurance covers the declared scope.",
+                "weight": 60,
+                "evidence": "independent_report"
+              }
+            ]
+          },
+          "deployment": {
+            "use_case": "Synthetic internal documentation",
+            "data_classification": "Internal",
+            "access_scope": "Read only"
+          }
+        },
+        "response_constraint": "final_report"
+      },
+      "recorded_result": {
+        "diagnosis": "Synthetic source review",
+        "work_package": {
+          "version": 1,
+          "summary": "Synthetic control review",
+          "findings": [
+            {
+              "kind": "vendor_claim",
+              "statement": "The vendor describes administrator SSO and MFA.",
+              "evidence_ids": [
+                "vendor-page-1"
+              ]
+            }
+          ],
+          "unknowns": [
+            "Page 3 requires operator inspection; no OCR is available."
+          ],
+          "requester_summary": "Synthetic review for an operator."
+        },
+        "vendor_assessment": {
+          "criteria": [
+            {
+              "id": "identity",
+              "status": "met",
+              "reason": "The vendor states the scoped identity requirements.",
+              "evidence_ids": [
+                "vendor-page-1"
+              ]
+            },
+            {
+              "id": "assurance",
+              "status": "partial",
+              "reason": "The designated report describes limited scoped assurance.",
+              "evidence_ids": [
+                "audit-page-2"
+              ]
+            }
+          ]
+        }
+      },
+      "expect": {
+        "rating": "UNKNOWN",
+        "forbidden_phrases": [
+          "SOC 2 certified",
+          "controls are guaranteed"
+        ],
+        "require_unknowns": true
+      }
+    },
+    {
+      "name": "missing-deployment-scope",
+      "request": {
+        "InvestigationID": "eval-missing-deployment-scope",
+        "Ticket": {
+          "id": "ticket-missing-deployment-scope",
+          "source": "operator",
+          "external_id": "missing-deployment-scope",
+          "summary": "Review synthetic Acme evidence",
+          "metadata": {
+            "fields": {
+              "Vendor": [
+                "Acme"
+              ]
+            }
+          }
+        },
+        "Evidence": [
+          {
+            "id": "vendor-page-1",
+            "source": "research",
+            "capability": "research.vendor.collect",
+            "kind": "research.vendor_document",
+            "summary": "Synthetic fixture document",
+            "observed_at": "2026-10-19T20:00:00Z",
+            "data": {
+              "resource": "acme",
+              "claim_type": "vendor_claim",
+              "content": "The vendor states that administrators use SSO and MFA."
+            }
+          },
+          {
+            "id": "audit-page-2",
+            "source": "research",
+            "capability": "research.vendor.collect",
+            "kind": "research.vendor_document",
+            "summary": "Synthetic fixture document",
+            "observed_at": "2026-10-19T20:00:00Z",
+            "data": {
+              "resource": "acme",
+              "claim_type": "independent_report",
+              "content": "Synthetic auditor found partially effective scoped controls.",
+              "format": "pdf",
+              "page_number": 2,
+              "page_count": 2
+            }
+          }
+        ],
+        "specialist": "vendor_review",
+        "instructions": "Review the supplied synthetic evidence and scope.",
+        "permitted_actions": [],
+        "handoff_targets": [],
+        "vendor_review": {
+          "vendor": "acme",
+          "rubric": {
+            "version": "synthetic-v1",
+            "moderate_at": 25,
+            "high_at": 60,
+            "criteria": [
+              {
+                "id": "identity",
+                "requirement": "Identity controls match the declared scope.",
+                "weight": 40,
+                "evidence": "vendor_claim"
+              },
+              {
+                "id": "assurance",
+                "requirement": "Independent assurance covers the declared scope.",
+                "weight": 60,
+                "evidence": "independent_report"
+              }
+            ]
+          },
+          "deployment": {
+            "use_case": "Synthetic internal documentation",
+            "data_classification": "Internal",
+            "access_scope": ""
+          }
+        },
+        "response_constraint": "final_report"
+      },
+      "recorded_result": {
+        "diagnosis": "Synthetic source review",
+        "work_package": {
+          "version": 1,
+          "summary": "Synthetic control review",
+          "findings": [
+            {
+              "kind": "vendor_claim",
+              "statement": "The vendor describes administrator SSO and MFA.",
+              "evidence_ids": [
+                "vendor-page-1"
+              ]
+            }
+          ],
+          "unknowns": [
+            "Deployment access scope is missing."
+          ],
+          "requester_summary": "Synthetic review for an operator."
+        },
+        "vendor_assessment": {
+          "criteria": [
+            {
+              "id": "identity",
+              "status": "unknown",
+              "reason": "Deployment access scope is missing.",
+              "evidence_ids": [
+                "vendor-page-1"
+              ]
+            },
+            {
+              "id": "assurance",
+              "status": "unknown",
+              "reason": "Deployment access scope is missing.",
+              "evidence_ids": [
+                "audit-page-2"
+              ]
+            }
+          ]
+        }
+      },
+      "expect": {
+        "rating": "UNKNOWN",
+        "forbidden_phrases": [
+          "SOC 2 certified",
+          "controls are guaranteed"
+        ],
+        "require_unknowns": true
+      }
+    },
+    {
+      "name": "historical-evidence",
+      "request": {
+        "InvestigationID": "eval-historical-evidence",
+        "Ticket": {
+          "id": "ticket-historical-evidence",
+          "source": "operator",
+          "external_id": "historical-evidence",
+          "summary": "Review synthetic Acme evidence",
+          "metadata": {
+            "fields": {
+              "Vendor": [
+                "Acme"
+              ]
+            }
+          }
+        },
+        "Evidence": [
+          {
+            "id": "vendor-page-1",
+            "source": "research",
+            "capability": "research.vendor.collect",
+            "kind": "research.vendor_document",
+            "summary": "Synthetic fixture document",
+            "observed_at": "2026-10-19T20:00:00Z",
+            "data": {
+              "resource": "acme",
+              "claim_type": "vendor_claim",
+              "content": "The vendor states that administrators use SSO and MFA."
+            }
+          },
+          {
+            "id": "audit-page-2",
+            "source": "research",
+            "capability": "research.vendor.collect",
+            "kind": "research.vendor_document",
+            "summary": "Synthetic fixture document",
+            "observed_at": "2026-10-19T20:00:00Z",
+            "data": {
+              "resource": "acme",
+              "claim_type": "independent_report",
+              "content": "Synthetic auditor found partially effective scoped controls.",
+              "format": "pdf",
+              "page_number": 2,
+              "page_count": 2
+            }
+          }
+        ],
+        "specialist": "vendor_review",
+        "instructions": "Review the supplied synthetic evidence and scope.",
+        "permitted_actions": [],
+        "handoff_targets": [],
+        "vendor_review": {
+          "vendor": "acme",
+          "rubric": {
+            "version": "synthetic-v1",
+            "moderate_at": 25,
+            "high_at": 60,
+            "criteria": [
+              {
+                "id": "identity",
+                "requirement": "Identity controls match the declared scope.",
+                "weight": 40,
+                "evidence": "vendor_claim"
+              },
+              {
+                "id": "assurance",
+                "requirement": "Independent assurance covers the declared scope.",
+                "weight": 60,
+                "evidence": "independent_report"
+              }
+            ]
+          },
+          "deployment": {
+            "use_case": "Synthetic internal documentation",
+            "data_classification": "Internal",
+            "access_scope": "Read only"
+          }
+        },
+        "response_constraint": "final_report"
+      },
+      "recorded_result": {
+        "diagnosis": "Synthetic source review",
+        "work_package": {
+          "version": 1,
+          "summary": "Synthetic control review",
+          "findings": [
+            {
+              "kind": "vendor_claim",
+              "statement": "The vendor describes administrator SSO and MFA.",
+              "evidence_ids": [
+                "vendor-page-1"
+              ]
+            }
+          ],
+          "unknowns": [
+            "The observations were not collected in the current run."
+          ],
+          "requester_summary": "Synthetic review for an operator."
+        },
+        "vendor_assessment": {
+          "criteria": [
+            {
+              "id": "identity",
+              "status": "met",
+              "reason": "The vendor states the scoped identity requirements.",
+              "evidence_ids": [
+                "vendor-page-1"
+              ]
+            },
+            {
+              "id": "assurance",
+              "status": "partial",
+              "reason": "The designated report describes limited scoped assurance.",
+              "evidence_ids": [
+                "audit-page-2"
+              ]
+            }
+          ]
+        }
+      },
+      "expect": {
+        "rating": "UNKNOWN",
+        "forbidden_phrases": [
+          "SOC 2 certified",
+          "controls are guaranteed"
+        ],
+        "require_unknowns": true
+      },
+      "current_evidence": []
+    },
+    {
+      "name": "knowledge-page-citation",
+      "request": {
+        "InvestigationID": "eval-knowledge-page",
+        "Ticket": {
+          "id": "ticket-knowledge",
+          "source": "operator",
+          "external_id": "knowledge",
+          "summary": "Explain synthetic VPN recovery"
+        },
+        "Evidence": [
+          {
+            "id": "vpn-page-2",
+            "source": "research",
+            "capability": "research.knowledge.collect",
+            "kind": "research.knowledge_document",
+            "data": {
+              "content": "Renew the expired session, then retry. Escalate repeated failures.",
+              "format": "pdf",
+              "page_number": 2,
+              "page_count": 2
+            }
+          }
+        ],
+        "specialist": "systems_knowledge",
+        "instructions": "Cite the supplied runbook and describe recommended steps.",
+        "permitted_actions": [],
+        "handoff_targets": []
+      },
+      "recorded_result": {
+        "work_package": {
+          "version": 1,
+          "summary": "Recommended VPN recovery steps",
+          "findings": [
+            {
+              "kind": "verified",
+              "statement": "The runbook recommends renewing the expired session.",
+              "evidence_ids": [
+                "vpn-page-2"
+              ]
+            }
+          ],
+          "unknowns": [
+            "No procedure has been executed."
+          ],
+          "requester_summary": "Renew the session and escalate repeated failures."
+        }
+      },
+      "expect": {
+        "required_evidence_ids": [
+          "vpn-page-2"
+        ],
+        "forbidden_phrases": [
+          "I reset your VPN",
+          "I executed the procedure"
+        ],
+        "require_unknowns": true
+      }
+    }
+  ]
+}

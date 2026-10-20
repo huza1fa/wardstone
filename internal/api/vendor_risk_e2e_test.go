@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,7 +20,7 @@ import (
 )
 
 func TestVendorRiskReportEndToEnd(t *testing.T) {
-	for _, scenario := range []string{"complete", "missing scope", "failed source", "truncated source"} {
+	for _, scenario := range []string{"complete", "missing scope", "failed source", "truncated source", "readable PDF", "scanned PDF", "encrypted PDF", "dense PDF"} {
 		t.Run(scenario, func(t *testing.T) {
 			pool := routingTestDatabase(t)
 			remote := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -35,10 +36,19 @@ func TestVendorRiskReportEndToEnd(t *testing.T) {
 				w.Write([]byte("Synthetic scoped source describing identity controls and assurance findings."))
 			}))
 			defer remote.Close()
-			collector, err := research.NewCollector(research.VendorCollect, research.Catalog{"Acme": {
+			sources := research.Catalog{"Acme": {
 				{Title: "Vendor security claims", URL: remote.URL + "/vendor"},
 				{Title: "Designated independent report", URL: remote.URL + "/audit", ClaimType: "independent_report"},
-			}}, remote.Client())
+			}}
+			if strings.HasSuffix(scenario, " PDF") {
+				name := strings.TrimSuffix(scenario, " PDF") + ".pdf"
+				path, err := filepath.Abs(filepath.Join("../connectors/research/testdata", name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				sources["Acme"][1].URL, sources["Acme"][1].Path = "", path
+			}
+			collector, err := research.NewCollector(research.VendorCollect, sources, remote.Client())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -102,13 +112,13 @@ func TestVendorRiskReportEndToEnd(t *testing.T) {
 			}
 			risk := item.WorkPackage.RiskAssessment
 			expected := "UNKNOWN"
-			if scenario == "complete" {
+			if scenario == "complete" || scenario == "readable PDF" {
 				expected = "MODERATE"
 			}
 			if risk.Rating != expected || risk.Scoring.Context.Rubric.Version != "pilot-v1" || risk.Scoring.Context.Rubric.Criteria[0].Weight != 40 {
 				t.Fatalf("unexpected scoring authority: %+v", risk)
 			}
-			if scenario == "complete" && (risk.Scoring.Score == nil || *risk.Scoring.Score != 30 || risk.Scoring.Context.Deployment.AccessScope != "Read only") {
+			if expected == "MODERATE" && (risk.Scoring.Score == nil || *risk.Scoring.Score != 30 || risk.Scoring.Context.Deployment.AccessScope != "Read only") {
 				t.Fatal("deployment scope or score changed")
 			}
 			if item.WorkPackage.Findings[0].Kind != "vendor_claim" {
@@ -120,7 +130,23 @@ func TestVendorRiskReportEndToEnd(t *testing.T) {
 			}
 			events, _ := stored.Timeline(context.Background(), intake.ID)
 			count := 0
+			pdfPages, pdfGaps := 0, 0
 			for _, event := range events {
+				if event.Type == audit.EvidenceCollected {
+					var data map[string]any
+					_ = json.Unmarshal(event.Data, &data)
+					if data["format"] == "pdf" {
+						if data["page_number"] != nil {
+							pdfPages++
+						}
+						if data["kind"] == "research.document_unavailable" {
+							pdfGaps++
+						}
+						if strings.Contains(string(event.Data), "testdata") || data["content"] != nil {
+							t.Fatal("PDF audit leaked path/body")
+						}
+					}
+				}
 				if event.Type == audit.VendorRiskScored {
 					count++
 					if event.ActorType != audit.ActorSystem || !strings.Contains(string(event.Data), risk.Scoring.RubricDigest) {
@@ -130,6 +156,12 @@ func TestVendorRiskReportEndToEnd(t *testing.T) {
 			}
 			if count != 1 {
 				t.Fatal("deterministic scoring was not audited once")
+			}
+			if scenario == "readable PDF" && (pdfPages != 2 || pdfGaps != 0) {
+				t.Fatalf("PDF page citations=%d gaps=%d", pdfPages, pdfGaps)
+			}
+			if scenario == "scanned PDF" && (pdfPages != 1 || pdfGaps != 1 || risk.Scoring.Score != nil) {
+				t.Fatal("scanned PDF did not withhold score with visible gap")
 			}
 			if deliveries, _ := stored.ListDeliveries(context.Background(), intake.ID); len(deliveries) != 0 {
 				t.Fatal("vendor review bypassed requester-message approval")

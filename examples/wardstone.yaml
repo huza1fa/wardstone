@@ -15,7 +15,7 @@ research:
         url: https://tailscale.com/docs/concepts/shared-responsibility
       - title: Tailscale data processing addendum
         url: https://tailscale.com/dpa
-  # Add administrator-owned .md/.txt runbooks relative to this policy file.
+  # Add administrator-owned .pdf/.md/.txt runbooks relative to this policy file.
   knowledge: {}
 
 # Example policy for review, not an industry-calibrated risk model.

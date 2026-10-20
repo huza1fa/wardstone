@@ -94,10 +94,12 @@ interface was subsequently implemented with fixture coverage; see
 [delivery recovery](development.md#jira-delivery-recovery). It was not part of
 this October 9 live simulation.
 
-Research currently supports public text/HTML/Markdown and configured local
-Markdown/plain-text files. PDF parsing, authenticated vendor portals, arbitrary
-search, real Jira permissions/webhook wiring, and real Google Workspace
-execution were not tested. The next batches are recorded in
+The October 9 simulation used public text/HTML/Markdown and local Markdown/plain
+text. Configured local PDF ingestion was subsequently implemented with synthetic
+fixture coverage, page citations, and isolated extraction; see
+[file evidence setup](development.md#vendor-sources-and-systems-runbooks). Real
+private PDFs, authenticated vendor portals, arbitrary search, real Jira
+permissions/webhook wiring, and real Google Workspace execution were not tested. The next batches are recorded in
 [the pilot plan](pilot-plan.md#follow-on-batch).
 
 ## Delivery recovery verification (October 17, 2026)
@@ -135,3 +137,68 @@ This verifies implementation behavior, not expert calibration or live-model
 semantic accuracy. The example rubric and synthetic expected assessments still
 need human review against actual deployment requirements. No Workspace tenant,
 Google writes, private vendor artifacts, or paid model calls were needed.
+
+## Configured file evidence verification (October 19, 2026)
+
+The file-evidence follow-up passed the full Go suite with the race detector and
+disposable PostgreSQL 17, `go vet ./...`, both binary builds, and all 29 console
+tests. Additional focused race runs covered the final PDF fixtures and report
+changes. Production Poppler/Bubblewrap extraction handled readable, scanned,
+encrypted, malformed, over-page-limit, over-file-size, and excerpt-limited
+synthetic documents. Process tests checked cancellation, bounded output, stripped
+server credentials, and filesystem isolation. Escaping symlinks and FIFOs were
+rejected by confined file reads.
+
+Persisted investigation tests exercised readable/scanned/encrypted/dense PDF
+reports: complete evidence retained deterministic scoring; incomplete evidence
+withheld scores and kept requester messages as reviewable drafts. Audit metadata
+retained page/file provenance without paths or document bodies. Desktop and
+390px headless console checks displayed page citations, original-file hashes,
+affected page numbers, and extraction gaps without horizontal overflow. The
+collaborative browser snapshot timed out twice, so this visual check used the
+shipped HTML/CSS/JS with synthetic API responses in the headless preview.
+
+No real private document, external model, Jira tenant, or Google Workspace was
+used for this follow-up. Fixture-based extraction does not establish semantic
+accuracy for complex layouts, image text, tables, or real assurance reports;
+operator calibration against permitted real documents remains necessary.
+
+## Operator reliability verification (October 19, 2026)
+
+The combined batch passed `scripts/verify.sh` against disposable PostgreSQL 17:
+vet, the complete Go race suite, all 38 console tests, three binary builds, and
+the seven-case recorded evaluation baseline. A populated legacy-schema upgrade
+test backfills case roots and preserves original IDs, evidence provenance,
+reports, and delivery uncertainty. Fresh and upgraded schemas require version 12.
+
+Case-control fixtures cover command replay/conflicts, concurrent retries,
+late-result rejection after cancellation, unsent reviewed Jira supersession,
+internal questions/replies, fresh linked attempts, and exhausted workers when no
+other job is claimable. Worker claim/takeover and writes now share the case lock;
+a blocked stale writer rechecks its lease after acquiring that lock. A dedicated
+regression test expires the old lease while its writer waits and proves it cannot
+commit evidence or bypass the held case lock.
+
+The stateful synthetic connector fixtures cover approval before queuing, expired
+grants, exactly bound arguments, version preconditions, independent membership
+and operation-receipt reads, three crash boundaries, stale-worker fencing,
+read-only recovery, bounded claims, disabled pilot endpoints, and surviving
+process-component recreation. The model-comparison fixture exercises three model
+IDs through the actual HTTP provider protocol, including rejected wording and
+invalid citations. Evaluation authority is frozen before calling a provider, and
+oversized responses fail the shared report boundary/capture budget.
+
+A running Wardstone process with a local model fixture and a separate PostgreSQL
+database completed console intake, an internal reply, a failed-attempt retry,
+cancellation during a slow model call, successful approved synthetic execution,
+and stale-proposal rejection. Desktop/mobile visual checks used shipped assets
+and responses captured from that service; forms, attempt history, approval
+arguments/digests, execution outcomes, and recovery controls rendered without
+horizontal overflow. Collaborative preview snapshots timed out twice, so visual
+inspection used the headless preview. Internal-only drafts no longer offer Jira
+send controls, and long mobile case IDs no longer crowd the close button.
+
+These checks used synthetic data and local provider fixtures. No production
+service/database was migrated, and no real Jira, Google Workspace mutation, or
+paid provider call was made for this batch. See the
+[upgrade notes](release-2026-10-19.md) and [operator guide](operator-guide.md).

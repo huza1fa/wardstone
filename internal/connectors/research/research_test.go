@@ -17,12 +17,12 @@ import (
 
 func TestCatalogRejectsUnsafeAndAmbiguousSources(t *testing.T) {
 	for name, catalog := range map[string]Catalog{
-		"HTTP":         {"vendor": {{Title: "bad", URL: "http://example.com"}}},
-		"credentials":  {"vendor": {{Title: "bad", URL: "https://user:secret@example.com"}}},
-		"query":        {"vendor": {{Title: "bad", URL: "https://example.com?token=secret"}}},
-		"local vendor": {"vendor": {{Title: "bad", Path: "secret.md"}}},
-		"ambiguous":    {"vendor": {{Title: "bad", Path: "file.md", URL: "https://example.com"}}},
-		"duplicate":    {"Vendor": {{Title: "a", URL: "https://example.com"}}, " vendor ": {{Title: "b", URL: "https://example.com"}}},
+		"HTTP":             {"vendor": {{Title: "bad", URL: "http://example.com"}}},
+		"credentials":      {"vendor": {{Title: "bad", URL: "https://user:secret@example.com"}}},
+		"query":            {"vendor": {{Title: "bad", URL: "https://example.com?token=secret"}}},
+		"unsupported file": {"vendor": {{Title: "bad", Path: "secret.docx"}}},
+		"ambiguous":        {"vendor": {{Title: "bad", Path: "file.md", URL: "https://example.com"}}},
+		"duplicate":        {"Vendor": {{Title: "a", URL: "https://example.com"}}, " vendor ": {{Title: "b", URL: "https://example.com"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := ValidateCatalog(catalog, "", false); err == nil {

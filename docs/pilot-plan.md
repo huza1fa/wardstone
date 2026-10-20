@@ -65,16 +65,39 @@ provider/database/console tests cover the implementation. Human calibration of
 the example rubric and review of the seed evaluation set remain outstanding.
 See [vendor risk scoring](development.md#vendor-risk-scoring).
 
+## Configured file evidence
+
+Implemented after deterministic scoring: administrator-configured PDF, Markdown,
+and text files for vendor and knowledge catalogs. PDF pages have distinct
+citations and original-file hashes; isolated extraction is bounded by file size,
+page count, time, memory, CPU, output, and excerpt budgets. Scanned/empty-text,
+encrypted, malformed, missing, and truncated evidence remain visible gaps and
+withhold vendor scores. Synthetic fixtures cover the collector, persisted
+reports, reviewed drafts, and console. Real private-report calibration and OCR
+remain outstanding. See [file evidence setup](development.md#vendor-sources-and-systems-runbooks).
+
+## Operator reliability batch
+
+Implemented after file evidence: console case creation, internal replies,
+durable cancellation, linked fresh retries, and exhausted-worker recovery;
+an opt-in synthetic PostgreSQL group connector with exact approvals, durable
+execution phases, idempotent crash recovery, and independent verification; and
+a bounded saved-final-report evaluation CLI sharing production report/scoring
+validation. See the [operator guide](operator-guide.md) and
+[upgrade notes](release-2026-10-19.md). Real infrastructure executors and broader
+operating modes remain disabled.
+
 ## Follow-on batch
 
 1. Review and calibrate the implemented vendor rubric and seed evaluation set
    against actual deployment requirements and reviewed source interpretations.
    Expand semantic wording evaluations and validate delivery recovery against a
    real Jira tenant before expanding requester delivery.
-2. Implement one approved Google group addition with action-digest binding,
-   freshness recheck, durable execution state, and an independent membership read
-   proving the postcondition. Exercise crash recovery with fixtures first, then
-   validate permissions and behavior in a suitable Workspace test tenant.
+2. Extend the implemented synthetic execution boundary to one approved Google
+   group addition after validating tenant permissions, current-state preconditions,
+   and Google-specific idempotency/unknown-outcome recovery. The synthetic connector
+   already exercises approval, execution, restart recovery, and independent reads;
+   real infrastructure requires its own connector-specific verification.
 3. Add Slack, managed credential lifecycle, and broader routing/data controls
    after those workflows are established. Expand autonomous execution only after
    recovery and adversarial tests cover each permitted capability.

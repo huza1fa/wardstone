@@ -20,10 +20,13 @@ docker compose exec -T postgres psql -U wardstone_admin -d wardstone \
   < migrations/000010_delivery_recovery.sql
 ```
 
+Existing schema-10 installations also need migrations 11 and 12; see the
+[upgrade notes](release-2026-10-19.md).
+
 Never reapply a migration whose version already appears in
 `schema_migrations`.
 
-The current runtime requires schema version 10. Apply any missing migrations in
+The current runtime requires schema version 12. Apply any missing migrations in
 numeric order. Migration 7 preserves old cases without inventing provenance;
 new dispatches record their original routing decision. Migration 8 adds evidence
 collector capability provenance, a newest-first case/capability index, and an
@@ -188,13 +191,21 @@ receive bounded retries; uncertain remote outcomes do not.
 ## Vendor sources and systems runbooks
 
 Configure `research.vendors` and `research.knowledge` in the policy YAML. Each
-resource contains one through four titled sources. Vendor sources require
-public HTTPS text documents. Knowledge sources can also use `.md`/`.txt` paths,
-resolved relative to the policy file. The example config includes Tailscale
-public sources; knowledge sources are empty until an operator supplies runbooks.
+resource contains one through four titled sources. Both catalogs accept public
+HTTPS text documents and configured `.pdf`, `.md`, or `.txt` files. Relative
+paths resolve from the policy file. The example config includes Tailscale public
+sources; local evidence stays outside Git and is selected only by administrator
+configuration. No browser upload or Google Workspace setup is required.
 
 ```yaml
 research:
+  vendors:
+    Acme:
+      - title: Acme security questionnaire
+        path: ../evidence/acme/questionnaire.md
+      - title: Acme independent assurance report
+        path: ../evidence/acme/audit.pdf
+        claim_type: independent_report
   knowledge:
     VPN troubleshooting:
       - title: Corporate VPN troubleshooting
@@ -222,11 +233,51 @@ criterion assessments. Missing rubric, deployment context, or required evidence
 produces UNKNOWN with no numeric score. See [vendor risk scoring](#vendor-risk-scoring).
 Public vendor statements remain claims; private reports are not inferred.
 
-Source documents are limited to 512 KiB downloads and 24 KiB text excerpts;
-truncation, timestamps, content hashes, and source URLs are recorded. The current
-collector supports text/HTML/Markdown, not PDF parsing, arbitrary search, or
-authenticated vendor portals. Local runbooks are administrator-selected files,
-not a general document index.
+Text documents are limited to 512 KiB reads and 24 KiB excerpts. Local PDFs
+are limited to 8 MiB and 20 pages, with 24 KiB of retained text **across the whole
+file**. Each readable PDF page gets a separate evidence ID, page number/count,
+original-file SHA-256, extraction method, and observation time. The audit console
+shows this provenance without exposing filesystem paths or document bodies.
+Administrator classification (`vendor_claim` by default, or `independent_report`)
+is retained on vendor pages; a private file does not automatically become
+independent assurance. Knowledge files are labelled `administrator_document`.
+
+PDF extraction requires Linux, Poppler (`pdfinfo`, `pdftotext`), Bubblewrap, and
+`prlimit`. On Debian/Ubuntu install them with:
+
+```sh
+sudo apt-get install poppler-utils bubblewrap util-linux
+```
+
+The service account must be able to use Bubblewrap's unprivileged user/network/PID
+namespaces. Extraction has a five-second deadline across both parser commands,
+a 512 MiB address-space limit, three CPU seconds per command, bounded output
+(256 KiB stdout, 16 KiB diagnostics), and no inherited server environment.
+Only system executables/libraries/fonts are mounted read only; the parser receives
+the original byte snapshot on stdin and has no source-file/home/network access.
+If tools or sandbox permissions are missing, collection records a gap with no
+unsandboxed fallback. Existing public text sources continue to work.
+
+Keep configured file directories under administrator control. Each configured
+file opens relative to a confined directory handle; escaping symlinks and
+nonregular files are rejected. Linux is required for confined local file reads.
+Neither tickets nor models can supply paths. Do not place private evidence in Git.
+Retained evidence excerpts are stored in PostgreSQL and sent to the configured
+model provider during investigation, so use only documents that provider is
+permitted to process.
+
+Encrypted/malformed/over-limit PDFs, parser warnings, missing text layers, and
+omitted pages remain explicit `research.document_unavailable` observations.
+Affected page numbers are recorded for empty-text and omitted pages. A blank
+page is conservatively treated as missing text too. Readable pages can still be
+cited, but any gap or truncated excerpt withholds the vendor score. There is no
+OCR, arbitrary search, authenticated portal access, or remote PDF download in
+this slice. Public HTTP sources remain text/HTML/Markdown only.
+
+Synthetic PDF fixtures live in `internal/connectors/research/testdata`; the
+optional `generate.py` reproduces them with ReportLab and pypdf. The normal test
+suite reads the checked-in PDFs using the production sandbox. CI installs the
+parser dependencies and fails if isolation or real extraction does not work.
 
 ## Jira API account
 
@@ -643,7 +694,9 @@ snapshot and SHA-256, deployment context, criterion assessments, evidence gaps,
 and a score only when complete. `vendor.risk_scored` is a SYSTEM audit event
 committed with report completion. Historical model-assigned ratings remain
 readable and are labelled as legacy; changing the rubric never rewrites them.
-No database migration beyond the current schema version 10 is required.
+Vendor scoring itself needs no additional schema migration. The current runtime
+requires schema 12 for operator cases and the synthetic execution pilot; see the
+[upgrade notes](release-2026-10-19.md).
 
 The console distinguishes model-interpreted criteria, vendor claims, and gaps.
 The runtime labels findings citing vendor claims accordingly. Bounded wording
@@ -660,3 +713,10 @@ assessments, strict snapshot decoding, cloning, rounding, and wording checks;
 provider/API tests exercise schema authority and persistence. These are a seed
 evaluation set for review, not evidence of expert calibration or live-model
 semantic accuracy. They require no Workspace tenant or external model account.
+
+## Operator cases, synthetic execution, and evaluations
+
+See the [operator guide](operator-guide.md) for console workflows, API semantics,
+synthetic execution phases, recovery, and model evaluation commands. The
+[October 19 upgrade notes](release-2026-10-19.md) cover migrations 11 and 12 and
+operating the service while the primary administrator is away.

@@ -24,9 +24,11 @@ import (
 	"github.com/wardstone-project/wardstone/internal/connectors/google"
 	"github.com/wardstone-project/wardstone/internal/connectors/jira"
 	"github.com/wardstone-project/wardstone/internal/connectors/research"
+	"github.com/wardstone-project/wardstone/internal/connectors/testgroup"
 	"github.com/wardstone-project/wardstone/internal/database"
 	"github.com/wardstone-project/wardstone/internal/delivery"
 	"github.com/wardstone-project/wardstone/internal/domain"
+	"github.com/wardstone-project/wardstone/internal/executor"
 	"github.com/wardstone-project/wardstone/internal/investigations"
 	"github.com/wardstone-project/wardstone/internal/models"
 	"github.com/wardstone-project/wardstone/internal/policy"
@@ -37,6 +39,7 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
 	if err := run(logger); err != nil {
 		logger.Error("wardstone stopped", "error", err)
 		os.Exit(1)
@@ -165,7 +168,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	setupService, err := readiness.New(setupChecks(settings, pool, jiraClient, googleClient, model), admin.RuntimeFeatures{
+	setupService, err := readiness.New(setupChecks(settings, pool, jiraClient, googleClient, model), admin.RuntimeFeatures{OperatorCases: model != nil, TestExecution: settings.TestExecutionEnabled,
 		JiraIntake: settings.JiraInboundConfigured() && model != nil, Investigations: model != nil,
 		GoogleEvidence: googleClient != nil && model != nil, JiraDelivery: deliveryDispatcher != nil,
 		VendorEvidence: len(settings.VendorSources) > 0 && model != nil, KnowledgeEvidence: len(settings.KnowledgeSources) > 0 && model != nil,
@@ -173,7 +176,15 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	options := []api.Option{api.WithAdmin(store, approvalService, settings.Mode), api.WithSetup(setupService), api.WithRoutingPreview(service), api.WithMessageReviews(store, deliveryDispatcher != nil)}
+	var testPilot *executor.Pilot
+	if settings.TestExecutionEnabled {
+		connector := testgroup.New(pool)
+		testPilot, err = executor.NewPilot(store, connector, connector, settings.JobLease)
+		if err != nil {
+			return err
+		}
+	}
+	options := []api.Option{api.WithTestExecution(store, settings.TestExecutionEnabled, settings.ApprovalLifetime), api.WithCases(store, "shadow-v2", model != nil), api.WithAdmin(store, approvalService, settings.Mode), api.WithSetup(setupService), api.WithRoutingPreview(service), api.WithMessageReviews(store, deliveryDispatcher != nil)}
 	if jiraClient != nil && deliveryDispatcher != nil {
 		recovery, err := delivery.NewRecoveryService(store, jiraClient)
 		if err != nil {
@@ -208,6 +219,15 @@ func run(logger *slog.Logger) error {
 	if workerPool != nil {
 		group.Go(func() error {
 			err := workerPool.Run(ctx)
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		})
+	}
+	if testPilot != nil {
+		group.Go(func() error {
+			err := testPilot.Run(ctx)
 			if errors.Is(err, context.Canceled) {
 				return nil
 			}

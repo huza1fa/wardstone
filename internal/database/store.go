@@ -75,9 +75,9 @@ func (s *Store) ReceiveTicket(ctx context.Context, ticket domain.Ticket, investi
 func (s *Store) GetInvestigation(ctx context.Context, id domain.InvestigationID) (domain.Investigation, error) {
 	var item domain.Investigation
 	err := s.pool.QueryRow(ctx, `SELECT id, ticket_id, status, model_provider, model, prompt_version, specialist,
-		routing, diagnosis, work_package, failure, created_at, started_at, completed_at FROM investigations WHERE id = $1`, id).Scan(
+		routing, diagnosis, work_package, failure, created_at, started_at, completed_at,case_id,COALESCE(parent_id,'') FROM investigations WHERE id = $1`, id).Scan(
 		&item.ID, &item.TicketID, &item.Status, &item.ModelProvider, &item.Model, &item.PromptVersion,
-		&item.Specialist, &item.Routing, &item.Diagnosis, &item.WorkPackage, &item.Failure, &item.CreatedAt, &item.StartedAt, &item.CompletedAt)
+		&item.Specialist, &item.Routing, &item.Diagnosis, &item.WorkPackage, &item.Failure, &item.CreatedAt, &item.StartedAt, &item.CompletedAt, &item.CaseID, &item.ParentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Investigation{}, investigations.ErrNotFound
 	}
@@ -459,7 +459,7 @@ func (s *Store) ReceiveRequesterReply(ctx context.Context, source domain.Connect
 	var status domain.InvestigationStatus
 	var reporterEmail string
 	err = tx.QueryRow(ctx, `SELECT i.id, i.status, t.reporter_email FROM investigations i
-		JOIN tickets t ON t.id = i.ticket_id WHERE t.source = $1 AND t.external_id = $2 FOR UPDATE`, source, ticketExternalID).Scan(&id, &status, &reporterEmail)
+		JOIN tickets t ON t.id = i.ticket_id WHERE t.source = $1 AND t.external_id = $2 ORDER BY i.created_at DESC,i.id DESC LIMIT 1 FOR UPDATE OF i`, source, ticketExternalID).Scan(&id, &status, &reporterEmail)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, investigations.ErrNotFound
 	}
@@ -562,26 +562,34 @@ func (s *Store) Claim(ctx context.Context, owner string, lease time.Duration) (w
 		return worker.Job{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	_, err = tx.Exec(ctx, `UPDATE jobs SET status = 'DEAD', last_error = 'maximum job attempts exceeded',
-		completed_at = now(), lease_owner = NULL, lease_expires_at = NULL
-		WHERE status = 'RUNNING' AND lease_expires_at < now() AND attempt >= 3`)
-	if err != nil {
+	if err := recoverExhaustedCases(ctx, tx); err != nil {
 		return worker.Job{}, err
 	}
 	var job worker.Job
-	err = tx.QueryRow(ctx, `SELECT id, kind, investigation_id, attempt FROM jobs
-		WHERE available_at <= now() AND attempt < 3 AND (status = 'PENDING' OR (status = 'RUNNING' AND lease_expires_at < now()))
-		ORDER BY available_at, created_at FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&job.ID, &job.Kind, &job.InvestigationID, &job.Attempt)
+	err = tx.QueryRow(ctx, `SELECT j.id,j.kind,j.investigation_id,j.attempt FROM jobs j
+ JOIN investigations i ON i.id=j.investigation_id
+ WHERE j.available_at<=clock_timestamp() AND j.attempt<3 AND (j.status='PENDING' OR (j.status='RUNNING' AND j.lease_expires_at<clock_timestamp()))
+ ORDER BY j.available_at,j.created_at LIMIT 1 FOR UPDATE OF i SKIP LOCKED`).Scan(&job.ID, &job.Kind, &job.InvestigationID, &job.Attempt)
+	if err == nil {
+		// The join can have been read before a competing claimant committed. Reload
+		// under the case lock, which also serializes lease takeover with all writes.
+		err = tx.QueryRow(ctx, `SELECT id,kind,investigation_id,attempt FROM jobs WHERE id=$1
+   AND attempt<3 AND (status='PENDING' OR(status='RUNNING' AND lease_expires_at<clock_timestamp())) FOR UPDATE`, job.ID).Scan(&job.ID, &job.Kind, &job.InvestigationID, &job.Attempt)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
+		if err := tx.Commit(ctx); err != nil {
+			return worker.Job{}, err
+		}
 		return worker.Job{}, worker.ErrNoJob
 	}
 	if err != nil {
 		return worker.Job{}, err
 	}
+
 	job.Attempt++
 	job.LeaseOwner = owner
 	_, err = tx.Exec(ctx, `UPDATE jobs SET status = 'RUNNING', attempt = $2, lease_owner = $3,
-		lease_expires_at = now() + $4::interval WHERE id = $1`, job.ID, job.Attempt, owner, lease.String())
+		lease_expires_at = clock_timestamp() + $4::interval WHERE id = $1`, job.ID, job.Attempt, owner, lease.String())
 	if err != nil {
 		return worker.Job{}, err
 	}
@@ -638,6 +646,11 @@ func requireLease(ctx context.Context, tx pgx.Tx, investigationID domain.Investi
 	job, ok := worker.LeaseFromContext(ctx)
 	if !ok {
 		return nil
+	}
+	// Take the case lock before validating the lease. Claim uses the same lock,
+	// so a stale worker that waited for a transaction cannot write after takeover.
+	if _, err := tx.Exec(ctx, `SELECT id FROM investigations WHERE id=$1 FOR UPDATE`, investigationID); err != nil {
+		return err
 	}
 	var valid bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1 AND investigation_id = $2

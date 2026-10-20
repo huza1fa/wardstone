@@ -93,6 +93,20 @@
           <div id="approval-list" class="approval-list" aria-live="polite"></div>
         </section>
 
+        <section id="new-case" aria-labelledby="new-case-title">
+          <div class="section-heading"><div><p class="eyebrow">Operator intake</p><h2 id="new-case-title">Start a case</h2></div></div>
+          <details class="case-intake"><summary>Create a console case</summary><form id="create-case-form" class="report-card">
+            <p class="detail-note">Investigate without Jira. Results and questions stay in this console. Retries preserve previous attempts and collect fresh evidence.</p>
+            <label for="case-actor">Operator name</label><input id="case-actor" maxlength="256" required autocomplete="name">
+            <label for="case-summary">Summary</label><input id="case-summary" maxlength="8192" required>
+            <label for="case-description">Details</label><textarea id="case-description" rows="3" maxlength="65536"></textarea>
+            <label for="case-request-type">Request type</label><input id="case-request-type" maxlength="256" placeholder="For example, Vendor review or Systems question">
+            <div class="detail-grid"><div><label for="case-vendor">Configured vendor (optional)</label><input id="case-vendor" maxlength="128"></div><div><label for="case-topic">Configured knowledge topic (optional)</label><input id="case-topic" maxlength="128"></div></div>
+            <details class="case-fields"><summary>Additional routing fields (optional)</summary><label for="case-fields">Field names mapped to arrays of values (JSON)</label><textarea id="case-fields" rows="3" maxlength="16384" placeholder='{"Access resource":["Engineering tools"],"Access user":["person@example.com"]}'></textarea></details>
+            <label for="case-reason">Reason for starting</label><input id="case-reason" maxlength="1000" required>
+            <p id="case-create-error" class="form-error" role="alert"></p><button id="case-create-submit" class="button" type="submit">Start investigation</button>
+          </form></details>
+        </section>
         <section id="investigations" aria-labelledby="investigations-title">
           <div class="section-heading">
             <div><p class="eyebrow">Recent work</p><h2 id="investigations-title">Investigations</h2></div>
@@ -103,8 +117,19 @@
               <thead><tr><th>Ticket</th><th>Status</th><th>Diagnosis</th><th>Created</th><th><span class="sr-only">View</span></th></tr></thead>
               <tbody id="investigation-list"></tbody>
             </table>
-            <div id="investigation-empty" class="empty-state" hidden><span aria-hidden="true">◇</span><h3>No investigations yet</h3><p>New Jira work will appear here after it is ingested.</p></div>
+            <div id="investigation-empty" class="empty-state" hidden><span aria-hidden="true">◇</span><h3>No investigations yet</h3><p>Start a case above or receive work from Jira.</p></div>
           </div>
+        </section>
+        <section id="test-execution" aria-labelledby="test-execution-title" hidden>
+          <div class="section-heading"><div><p class="eyebrow">Synthetic connector</p><h2 id="test-execution-title">Test approved execution</h2></div><button id="test-execution-refresh" class="button ghost" type="button">Refresh</button></div>
+          <p class="detail-note">This pilot changes only synthetic groups in the test connector. Propose, approve the exact action in the approval queue, then queue execution. Success requires an independent membership read. No Google Workspace connection is used.</p>
+          <form id="test-proposal-form" class="report-card">
+            <label for="test-actor">Operator name</label><input id="test-actor" maxlength="256" required>
+            <div class="detail-grid"><div><label for="test-group">Synthetic group</label><input id="test-group" maxlength="64" placeholder="test-engineering" pattern="test-[a-z0-9][a-z0-9_\-]{0,58}" required></div><div><label for="test-member">Synthetic member</label><input id="test-member" maxlength="64" placeholder="test-alice" pattern="test-[a-z0-9][a-z0-9_\-]{0,58}" required></div></div>
+            <label for="test-reason">Reason</label><input id="test-reason" maxlength="1000" required>
+            <p id="test-proposal-error" class="form-error" role="alert"></p><button id="test-proposal-submit" class="button" type="submit">Propose test addition</button>
+          </form>
+          <p id="test-execution-error" class="form-error" role="alert"></p><div id="test-execution-list"></div>
         </section>
         <section id="routing-preview" aria-labelledby="routing-preview-title">
           <div class="section-heading">

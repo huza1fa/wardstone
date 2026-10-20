@@ -159,3 +159,20 @@ dialog::backdrop { background: #03070bbd; backdrop-filter: blur(3px); }
 .message-recovery .button { justify-self: start; }
 .recovery-risk { display: flex; align-items: flex-start; gap: .65rem; }
 .recovery-risk input { width: auto; flex: 0 0 auto; margin-top: .2rem; }
+
+.case-intake > summary { cursor: pointer; color: var(--blue); padding: .8rem 1rem; border: 1px solid var(--line-soft); border-radius: 8px; background: #10171f; font-size: .82rem; }
+.case-intake[open] > summary { margin-bottom: .8rem; }
+#test-execution-list { display: grid; gap: .9rem; }
+#test-execution .report-card { margin-bottom: 1rem; }
+#new-case label, #test-execution label { display: block; margin: .8rem 0 .35rem; font-size: .78rem; color: var(--muted); }
+#new-case input, #new-case textarea, #test-execution input { width: 100%; }
+.feature-list .button { overflow-wrap: anywhere; white-space: normal; text-align: left; }
+.approval-card code { display: block; overflow-wrap: anywhere; }
+
+.dialog-head { gap: .75rem; align-items: flex-start; }
+.dialog-head > div { min-width: 0; flex: 1; }
+.dialog-head h2 { overflow-wrap: anywhere; }
+.dialog-head > .icon-button { flex: 0 0 2rem; }
+.case-command { display: grid; gap: .55rem; padding-top: .75rem; }
+.case-command button { justify-self: start; }
+.case-command .form-error:empty { display: none; }

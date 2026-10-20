@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -44,7 +43,7 @@ type Catalog map[string][]Source
 
 // ValidateCatalog copies and normalizes administrator configuration. Local
 // paths are resolved relative to the policy file, never relative to a ticket.
-func ValidateCatalog(input Catalog, base string, local bool) (Catalog, error) {
+func ValidateCatalog(input Catalog, base string, knowledge bool) (Catalog, error) {
 	if len(input) > 128 {
 		return nil, errors.New("research catalog exceeds 128 resources")
 	}
@@ -58,7 +57,7 @@ func ValidateCatalog(input Catalog, base string, local bool) (Catalog, error) {
 			return nil, errors.New("duplicate normalized research resource")
 		}
 		for _, source := range sources {
-			if source.ClaimType != "" && (local || (source.ClaimType != "vendor_claim" && source.ClaimType != "independent_report")) {
+			if source.ClaimType != "" && (knowledge || (source.ClaimType != "vendor_claim" && source.ClaimType != "independent_report")) {
 				return nil, errors.New("invalid source claim_type")
 			}
 			if !validText(source.Title, 256) || (source.URL == "") == (source.Path == "") {
@@ -70,14 +69,19 @@ func ValidateCatalog(input Catalog, base string, local bool) (Catalog, error) {
 					return nil, errors.New("research URLs must use HTTPS without credentials, query, or fragment")
 				}
 			} else {
-				if !local || !validText(source.Path, 4096) {
-					return nil, errors.New("local documents are permitted only in the knowledge catalog")
+				if !validText(source.Path, 4096) {
+					return nil, errors.New("invalid configured document path")
 				}
-				if ext := strings.ToLower(filepath.Ext(source.Path)); ext != ".md" && ext != ".txt" {
-					return nil, errors.New("knowledge files must be Markdown or plain text")
+				if ext := strings.ToLower(filepath.Ext(source.Path)); ext != ".md" && ext != ".txt" && ext != ".pdf" {
+					return nil, errors.New("configured files must be PDF, Markdown, or plain text")
 				}
 				if !filepath.IsAbs(source.Path) {
 					source.Path = filepath.Join(base, source.Path)
+				}
+				var err error
+				source.Path, err = filepath.Abs(source.Path)
+				if err != nil {
+					return nil, errors.New("invalid configured document path")
 				}
 			}
 			result[name] = append(result[name], source)
@@ -98,7 +102,7 @@ func Capabilities() []capabilities.Definition {
 		return nil
 	}
 	return []capabilities.Definition{
-		{Name: VendorCollect, Connector: Name, Description: "Read configured public vendor documents", Effect: domain.EffectRead, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validate},
+		{Name: VendorCollect, Connector: Name, Description: "Read configured vendor documents", Effect: domain.EffectRead, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validate},
 		{Name: KnowledgeCollect, Connector: Name, Description: "Read configured systems knowledge documents", Effect: domain.EffectRead, ArgumentsVersion: 1, Idempotent: true, ValidateArguments: validate},
 	}
 }
@@ -160,6 +164,10 @@ func (c *Collector) CollectCase(ctx context.Context, ticket domain.Ticket, messa
 			result = append(result, c.evidence("research.document_unavailable", source.Title+" could not be collected", map[string]any{"title": source.Title, "url": source.URL, "status": "unavailable", "unknown": "Source unavailable; no claims from this document are verified."}))
 			continue
 		}
+		if contentType == "application/pdf" {
+			result = append(result, c.pdfEvidence(ctx, source, selected, data, modified)...)
+			continue
+		}
 		content := string(data)
 		if strings.Contains(contentType, "html") {
 			content = extractHTML(data)
@@ -183,7 +191,7 @@ func (c *Collector) CollectCase(ctx context.Context, ticket domain.Ticket, messa
 		if c.capability == KnowledgeCollect {
 			kind, claimType = "research.knowledge_document", "administrator_document"
 		}
-		result = append(result, c.evidence(kind, source.Title, map[string]any{"title": source.Title, "url": source.URL, "content": content, "content_sha256": hex.EncodeToString(digest[:]), "last_modified": modified, "truncated": truncated, "claim_type": claimType, "resource": selected}))
+		result = append(result, c.evidence(kind, source.Title, map[string]any{"title": source.Title, "url": source.URL, "content": content, "content_sha256": hex.EncodeToString(digest[:]), "last_modified": modified, "truncated": truncated, "claim_type": claimType, "resource": selected, "format": "text"}))
 	}
 	return result, nil
 }
@@ -250,25 +258,28 @@ func (c *Collector) read(ctx context.Context, source Source) ([]byte, string, st
 			return nil, "", "", errors.New("source must be text")
 		}
 	} else {
-		stat, err := os.Stat(source.Path)
-		if err != nil || !stat.Mode().IsRegular() {
-			return nil, "", "", errors.New("source must be a regular file")
-		}
-		file, err := os.Open(source.Path)
+		file, err := openLocal(source.Path)
 		if err != nil {
 			return nil, "", "", err
 		}
-		stat, err = file.Stat()
+		stat, err := file.Stat()
 		if err != nil || !stat.Mode().IsRegular() {
 			file.Close()
 			return nil, "", "", errors.New("source must be a regular file")
 		}
 		reader = file
 		modified = stat.ModTime().UTC().Format(time.RFC3339)
+		if strings.EqualFold(filepath.Ext(source.Path), ".pdf") {
+			contentType = "application/pdf"
+		}
 	}
 	defer reader.Close()
-	data, err := io.ReadAll(io.LimitReader(reader, MaxDownload+1))
-	if err != nil || len(data) > MaxDownload {
+	limit := MaxDownload
+	if contentType == "application/pdf" {
+		limit = MaxPDFDownload
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, int64(limit+1)))
+	if err != nil || len(data) > limit {
 		return nil, "", "", errors.New("source exceeds document budget or could not be read")
 	}
 	return data, contentType, modified, nil
