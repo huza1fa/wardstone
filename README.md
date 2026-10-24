@@ -49,6 +49,11 @@ PDFs carry page-specific citations; unreadable pages remain explicit gaps. Both
 vendor and knowledge catalogs also accept Markdown and plain-text files. See
 [file evidence setup](docs/development.md#vendor-sources-and-systems-runbooks).
 
+Choose **View source** on a research citation to compare its stored excerpt with
+the finding before approving a message. Inspection never refetches the source;
+PDF pages, truncation, and missing text remain visible. See the
+[evidence inspector](docs/operator-guide.md#inspect-the-evidence-behind-a-finding).
+
 Sources come from an administrator-owned catalog. Vendor documents remain
 vendor claims; the rating is an assessment for operator review. Missing audit
 reports and deployment requirements appear as gaps in the report.

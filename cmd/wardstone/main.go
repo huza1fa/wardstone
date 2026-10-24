@@ -184,7 +184,7 @@ func run(logger *slog.Logger) error {
 			return err
 		}
 	}
-	options := []api.Option{api.WithTestExecution(store, settings.TestExecutionEnabled, settings.ApprovalLifetime), api.WithCases(store, "shadow-v2", model != nil), api.WithAdmin(store, approvalService, settings.Mode), api.WithSetup(setupService), api.WithRoutingPreview(service), api.WithMessageReviews(store, deliveryDispatcher != nil)}
+	options := []api.Option{api.WithResearchEvidence(store), api.WithTestExecution(store, settings.TestExecutionEnabled, settings.ApprovalLifetime), api.WithCases(store, "shadow-v2", model != nil), api.WithAdmin(store, approvalService, settings.Mode), api.WithSetup(setupService), api.WithRoutingPreview(service), api.WithMessageReviews(store, deliveryDispatcher != nil)}
 	if jiraClient != nil && deliveryDispatcher != nil {
 		recovery, err := delivery.NewRecoveryService(store, jiraClient)
 		if err != nil {

@@ -52,6 +52,7 @@ type SetupService interface {
 }
 
 type Server struct {
+	researchEvidence     ResearchEvidenceReader
 	testExecution        executor.Store
 	testExecutionEnabled bool
 	testApprovalLifetime time.Duration
@@ -152,6 +153,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/tickets/jira", s.receiveJira)
 	mux.HandleFunc("POST /v1/tickets/jira/replies", s.receiveJiraReply)
 	mux.HandleFunc("GET /v1/investigations/{id}", s.getInvestigation)
+	mux.HandleFunc("GET /v1/investigations/{id}/evidence/{evidenceID}", s.getResearchEvidence)
 	mux.HandleFunc("GET /v1/investigations/{id}/messages", s.getMessages)
 	mux.HandleFunc("POST /v1/investigations/{id}/messages/{messageID}/review", s.reviewMessage)
 	mux.HandleFunc("POST /v1/investigations/{id}/messages/{messageID}/recovery", s.recoverMessage)

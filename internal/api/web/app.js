@@ -20,6 +20,7 @@
   let setupRevision = 0;
   let activeSetupProbe = "";
   let detailRevision = 0;
+  let detailController;
   let dashboardRevision = 0;
   let createCaseRevision = 0;
   let proposalRevision = 0;
@@ -250,6 +251,9 @@
   }
 
   async function showInvestigation(id) {
+    detailController?.abort();
+    const controller = new AbortController();
+    detailController = controller;
     const revision = ++detailRevision;
     const sessionToken = state.token;
     const dialog = byId("investigation-dialog");
@@ -275,7 +279,7 @@
       ]);
       const timeline = node("ol", { className: "timeline" });
       const events = timelinePayload.events || [];
-      const evidence = evidenceIndex(events);
+      const evidence = evidenceIndex(events, id, revision, sessionToken, controller.signal);
       for (const event of events) {
         const entry = node("li", {}, [node("strong", { text: humanize(event.type) }), node("small", { text: `${formatDate(event.occurred_at)} · ${event.actor_id || event.actor_type}` })]);
         const description = describeRoutingEvent(event);
@@ -450,12 +454,27 @@
     return card;
   }
 
-  function evidenceIndex(events) {
-    const evidence = new Map();
+  function evidenceIndex(events, investigationID, revision, token, signal) {
+    const observations = new Map();
     for (const event of events) {
-      if (event.type === "evidence.collected" && event.data?.evidence_id) evidence.set(event.data.evidence_id, event);
+      if (event.type === "evidence.collected" && event.data?.evidence_id) observations.set(event.data.evidence_id, event);
     }
-    return evidence;
+    const requests = new Map();
+    return {
+      get: (id) => observations.get(id),
+      active: () => revision === detailRevision && token === state.token && !signal.aborted,
+      load: (id) => {
+        if (!requests.has(id)) {
+          const request = api(`/v1/investigations/${encodeURIComponent(investigationID)}/evidence/${encodeURIComponent(id)}`, { signal })
+            .then((payload) => {
+              if (payload.evidence?.id !== id || payload.evidence?.investigation_id !== investigationID) throw new Error("The source did not match this investigation.");
+              return payload.evidence;
+            }).catch((error) => { requests.delete(id); throw error; });
+          requests.set(id, request);
+        }
+        return requests.get(id);
+      },
+    };
   }
 
   function observationFreshness(value) {
@@ -483,7 +502,56 @@
     if (data.source_url) citation.append(node("small", { text: `Source URL: ${data.source_url}` }));
     if (data.content_sha256) citation.append(node("small", { text: `${data.format === "pdf" ? "Original file" : "Content"} SHA-256: ${data.content_sha256}` }));
     if (data.claim_type) citation.append(node("small", { text: `Evidence type: ${data.claim_type}${data.truncated ? " · excerpt truncated" : ""}` }));
+    const researchDocument = event.actor_type === "CONNECTOR" && event.actor_id === "research" && (
+      data.kind === "research.vendor_document" && data.capability === "research.vendor.collect" ||
+      data.kind === "research.knowledge_document" && data.capability === "research.knowledge.collect" ||
+      data.kind === "research.document_unavailable" && ["research.vendor.collect", "research.knowledge.collect"].includes(data.capability));
+    if (researchDocument) {
+      const button = node("button", { type: "button", className: "button ghost source-toggle", text: "View source", "aria-expanded": "false" });
+      const panel = node("section", { className: "source-inspector", hidden: true, "aria-label": "Stored research source", "aria-live": "polite" });
+      let loaded = false;
+      button.addEventListener("click", async () => {
+        if (button.disabled || !evidence.active()) return;
+        panel.hidden = !panel.hidden;
+        button.setAttribute("aria-expanded", String(!panel.hidden));
+        button.textContent = panel.hidden ? "View source" : "Hide source";
+        if (panel.hidden || loaded) return;
+        button.disabled = true;
+        panel.replaceChildren(node("p", { text: "Loading stored source…" }));
+        try {
+          const source = await evidence.load(id);
+          if (!evidence.active()) return;
+          panel.replaceChildren(sourceInspector(source));
+          loaded = true;
+        } catch (error) {
+          if (!evidence.active()) return;
+          if (error.status === 401) { disconnect(); return; }
+          panel.replaceChildren(node("p", { className: "form-error", role: "alert", text: error.status === 404 ? "The stored source is unavailable or has no supported research provenance. No source was fetched." : "Could not load the stored source. Close and reopen it to retry." }));
+        } finally {
+          if (evidence.active()) button.disabled = false;
+        }
+      });
+      citation.append(button, panel);
+    }
     return citation;
+  }
+
+  function sourceInspector(source) {
+    const document = source.document || {};
+    const panel = node("div", {}, [node("h4", { text: document.title || "Stored research source" }), node("p", { className: "detail-note", text: "Stored collection snapshot — not a new fetch. Compare with the finding above: a citation does not prove support for the claim, and prior-run evidence may be historical." })]);
+    const claimLabels = { vendor_claim: "Vendor claim — not independently verified", independent_report: "Administrator-designated independent report — authenticity not verified", administrator_document: "Administrator-provided knowledge document" };
+    panel.append(node("p", { className: "detail-note", text: claimLabels[document.claim_type] || "Evidence type not recorded — review source authority" }));
+    if (document.format === "pdf") panel.append(node("p", { className: "detail-note", text: document.page_number ? `PDF page ${document.page_number} of ${document.page_count || "unknown"}` : "PDF — no readable page" }));
+    if (document.status) panel.append(node("p", { className: "source-warning", text: `Evidence gap: ${humanize(document.status)}` }));
+    if (document.affected_pages?.length) panel.append(node("p", { className: "detail-note", text: `Affected pages: ${document.affected_pages.join(", ")}` }));
+    if (document.truncated) panel.append(node("p", { className: "source-warning", text: "Excerpt truncated during collection. This is not the complete document or page." }));
+    panel.append(node("h4", { text: "Stored excerpt (untrusted source text)" }), document.content ? node("pre", { className: "source-excerpt", text: document.content }) : node("p", { className: "detail-copy", text: "No readable excerpt was stored for this observation. Missing text is not evidence that a claim is true or false." }));
+    const provenance = node("details", { className: "source-provenance" }, [node("summary", { text: "Source details and provenance" }), detailField("Evidence ID", source.id), detailField("Capability", source.capability), detailField("Observed", `${formatDate(source.observed_at)} · ${observationFreshness(source.observed_at)}`)]);
+    if (document.url) provenance.append(detailField("Source URL (not fetched)", document.url));
+    if (document.extraction_method) provenance.append(detailField("Extraction", document.extraction_method));
+    if (document.content_sha256) provenance.append(detailField(document.format === "pdf" ? "Original file SHA-256" : "Content SHA-256", document.content_sha256));
+    panel.append(provenance);
+    return panel;
   }
 
   function reportCard(report, evidence) {
@@ -765,6 +833,8 @@
     dashboardRevision++;createCaseRevision++;proposalRevision++;
     byId("case-create-submit").disabled=false;byId("test-proposal-submit").disabled=false;
     detailRevision++;
+    detailController?.abort();
+    byId("dialog-body").replaceChildren();
     setupRevision++;
     testExecutionRevision++;
     byId("test-execution").hidden = true;
@@ -836,7 +906,18 @@
     const button = event.target.closest("button[data-setup-name]");
     if (button) testSetupConnection(button);
   });
-  byId("dialog-close").addEventListener("click", () => byId("investigation-dialog").close());
+  function clearInvestigationDetail() {
+    detailRevision++;
+    detailController?.abort();
+    byId("dialog-body").replaceChildren();
+  }
+  byId("dialog-close").addEventListener("click", () => { clearInvestigationDetail(); byId("investigation-dialog").close(); });
+  byId("investigation-dialog").addEventListener("close", () => {
+    // Native close events are queued. An old event must not clear a detail that
+    // has already been reopened (for example immediately after Escape).
+    if (!byId("investigation-dialog").open) clearInvestigationDetail();
+  });
+  byId("investigation-dialog").addEventListener("cancel", clearInvestigationDetail);
   document.querySelectorAll(".dialog-cancel").forEach((button) => button.addEventListener("click", () => byId("decision-dialog").close()));
   byId("decision-form").addEventListener("submit", submitDecision);
   byId("routing-preview-form").addEventListener("submit", submitRoutingPreview);

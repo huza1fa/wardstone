@@ -137,6 +137,14 @@ dialog::backdrop { background: #03070bbd; backdrop-filter: blur(3px); }
 .finding-list p { margin-bottom: .4rem; }
 .evidence-citation { margin: .45rem 0; padding: .55rem .65rem; border: 1px solid var(--line-soft); border-radius: 6px; background: #0c131b; overflow-wrap: anywhere; }
 .evidence-citation code { font-size: .75rem; }.evidence-citation small { display: block; margin-top: .25rem; color: var(--muted); font-size: .68rem; white-space: pre-wrap; }
+.source-toggle { margin-top: .6rem; }
+.source-inspector { margin-top: .65rem; padding: .75rem; border: 1px solid var(--line); border-radius: 6px; min-width: 0; }
+.source-inspector h4 { margin: .5rem 0; }
+.source-inspector .detail-field { margin: .4rem 0; }
+.source-excerpt { margin: .5rem 0 0; padding: .75rem; max-height: 24rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8rem; line-height: 1.6; background: #080e14; border-radius: 4px; }
+.source-warning { color: var(--amber); font-size: .8rem; }
+.source-provenance { margin-top: .75rem; font-size: .8rem; }
+.source-provenance summary { cursor: pointer; color: var(--muted); }
 .action-detail, .message-detail { margin-top: .85rem; padding-top: .1rem; border-top: 1px solid var(--line); }.policy-result { padding: .6rem; border-left: 2px solid var(--amber); background: #1b201f; }
 .literal-json { padding: .7rem; border: 1px solid var(--line-soft); border-radius: 6px; background: #0c131b; color: #d6e4f0; font-size: .75rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .timeline { margin: 1rem 0 0; padding: 0; list-style: none; }

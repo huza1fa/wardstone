@@ -67,6 +67,165 @@ function openInvestigation(get, id) {
 const submit = (element) => element.listeners.submit({ preventDefault() {} });
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
+function researchResponses(sourceResponse = {}) {
+  return {
+    "/v1/investigations/sources": { body: { id: "sources", work_package: { version: 1, summary: "Review sources", findings: [
+      { kind: "vendor_claim", statement: "The vendor states it encrypts data", evidence_ids: ["page-2"] },
+      { kind: "assumption", statement: "Check the scope before approving", evidence_ids: ["page-2"] },
+    ], unknowns: [] } } },
+    "/v1/investigations/sources/timeline": { body: { events: [
+      { type: "evidence.collected", actor_type: "CONNECTOR", actor_id: "research", data: { evidence_id: "page-2", kind: "research.vendor_document", capability: "research.vendor.collect", title: "Assurance report", format: "pdf", page_number: 2, page_count: 3 } },
+    ] } },
+    "/v1/investigations/sources/evidence/page-2": sourceResponse,
+  };
+}
+
+const sourceButtons = (get) => descendants(get("dialog-body")).filter((item) => item.className?.includes("source-toggle"));
+
+test("source inspection is lazy, deduplicated, case scoped and renders stored PDF text literally", async () => {
+  const hostile = '<img src=x onerror="alert(1)">\n[not a link](javascript:alert(1))';
+  let resolveSource;
+  const response = new Promise((resolve) => { resolveSource = resolve; });
+  const { get, requests } = harness(researchResponses(() => response));
+  get("operator-token").value = "operator-secret";
+  await submit(get("connection-form"));
+  openInvestigation(get, "sources");
+  await settle();
+  const buttons = sourceButtons(get);
+  assert.equal(buttons.length, 3); // Two findings and the audit observation.
+  assert.equal(requests.filter((r) => r.url.includes("/evidence/")).length, 0);
+  const first = buttons[0].listeners.click();
+  const second = buttons[1].listeners.click();
+  assert.equal(buttons[0].disabled, true);
+  assert.equal(buttons[0]["aria-expanded"], "true");
+  assert.equal(requests.filter((r) => r.url.includes("/evidence/")).length, 1);
+  resolveSource({ body: { evidence: { id: "page-2", investigation_id: "sources", capability: "research.vendor.collect", observed_at: "2026-01-01T00:00:00Z", document: { title: hostile, content: hostile, url: "https://example.com/report", format: "pdf", page_number: 2, page_count: 3, extraction_method: "poppler-text-v1", content_sha256: "original-file-hash", claim_type: "independent_report", truncated: true } } } });
+  await Promise.all([first, second]);
+  const text = textOf(get("dialog-body"));
+  for (const value of [hostile, "2 of 3", "original-file-hash", "Excerpt truncated", "authenticity not verified", "not a new fetch", "does not prove", "Stale observation"]) assert.ok(text.includes(value), `Missing ${value}`);
+  const nodes = descendants(get("dialog-body"));
+  assert.ok(!nodes.some((item) => ["a", "img", "script", "iframe"].includes(item.tagName)));
+  assert.ok(nodes.some((item) => item.className === "source-excerpt" && item.textContent === hostile));
+  await buttons[0].listeners.click();
+  assert.equal(buttons[0]["aria-expanded"], "false");
+  await buttons[0].listeners.click();
+  await buttons[2].listeners.click();
+  assert.equal(requests.filter((r) => r.url.includes("/evidence/")).length, 1);
+  const request = requests.find((r) => r.url.includes("/evidence/"));
+  assert.equal(request.options.headers.get("Authorization"), "Bearer operator-secret");
+  assert.equal(request.options.cache, "no-store");
+  assert.ok(!requests.some((r) => r.url.startsWith("https:")));
+});
+
+test("source gaps show missing text without inferring evidence or fetching a replacement", async () => {
+  const responses = researchResponses({ body: { evidence: { id: "page-2", investigation_id: "sources", document: { title: "Scanned report", format: "pdf", status: "pdf_pages_without_text", affected_pages: [1, 3], content: "" } } } });
+  responses["/v1/investigations/sources/timeline"].body.events[0].data.kind = "research.document_unavailable";
+  const { get, requests } = harness(responses);
+  openInvestigation(get, "sources");
+  await settle();
+  await sourceButtons(get)[0].listeners.click();
+  const text = textOf(get("dialog-body"));
+  for (const value of ["No readable excerpt was stored", "Missing text is not evidence", "1, 3", "Pdf Pages Without Text"]) assert.ok(text.includes(value), `Missing ${value}`);
+  assert.equal(requests.filter((r) => r.url.includes("/evidence/")).length, 1);
+});
+
+test("source errors retain the report, hide upstream text, and allow a fresh retry", async () => {
+  for (const status of [404, 500, 503]) {
+    let attempts = 0;
+    const { get, requests } = harness(researchResponses(() => {
+      attempts++;
+      return attempts === 1 ? { status, body: { error: "private upstream failure" } } : { body: { evidence: { id: "page-2", investigation_id: "sources", document: { content: "Recovered stored source" } } } };
+    }));
+    openInvestigation(get, "sources");
+    await settle();
+    const button = sourceButtons(get)[0];
+    await button.listeners.click();
+    assert.equal(button.disabled, false);
+    assert.ok(textOf(get("dialog-body")).includes("Review sources"));
+    assert.ok(!textOf(get("dialog-body")).includes("private upstream failure"));
+    assert.ok(textOf(get("dialog-body")).includes(status === 404 ? "No source was fetched" : "reopen it to retry"));
+    await button.listeners.click();
+    await button.listeners.click();
+    assert.ok(textOf(get("dialog-body")).includes("Recovered stored source"));
+    assert.equal(requests.filter((r) => r.url.includes("/evidence/")).length, 2);
+  }
+});
+
+test("legacy, mismatched and non-research citations do not offer source inspection", async () => {
+  for (const edit of [
+    (event) => { event.data.capability = ""; },
+    (event) => { event.data.capability = "research.knowledge.collect"; },
+    (event) => { event.actor_id = "google"; },
+    (event) => { event.actor_type = "MODEL"; },
+    (event) => { event.data.kind = "research.request_context"; },
+  ]) {
+    const responses = researchResponses();
+    edit(responses["/v1/investigations/sources/timeline"].body.events[0]);
+    const { get, requests } = harness(responses);
+    openInvestigation(get, "sources");
+    await settle();
+    assert.equal(sourceButtons(get).length, 0);
+    assert.equal(requests.filter((r) => r.url.includes("/evidence/")).length, 0);
+  }
+});
+
+test("a mismatched source response never displays another attempt's evidence", async () => {
+  for (const evidence of [
+    { id: "page-2", investigation_id: "other", document: { content: "Wrong attempt source" } },
+    { id: "wrong-id", investigation_id: "sources", document: { content: "Wrong citation source" } },
+  ]) {
+    const { get } = harness(researchResponses({ body: { evidence } }));
+    openInvestigation(get, "sources");
+    await settle();
+    await sourceButtons(get)[0].listeners.click();
+    assert.ok(!textOf(get("dialog-body")).includes(evidence.document.content));
+    assert.ok(textOf(get("dialog-body")).includes("Could not load the stored source"));
+  }
+});
+
+test("closing or switching cases aborts source loads and fences late responses", async () => {
+  for (const close of [false, true]) {
+    let resolveSource;
+    const response = new Promise((resolve) => { resolveSource = resolve; });
+    const { get, requests } = harness(researchResponses(() => response));
+    openInvestigation(get, "sources");
+    await settle();
+    const pending = sourceButtons(get)[0].listeners.click();
+    if (close) get("dialog-close").listeners.click();
+    else openInvestigation(get, "new-case");
+    await settle();
+    const request = requests.find((r) => r.url.includes("/evidence/"));
+    assert.equal(request.options.signal.aborted, true);
+    resolveSource({ body: { evidence: { id: "page-2", investigation_id: "sources", document: { content: "Late private source" } } } });
+    await pending;
+    assert.ok(!textOf(get("dialog-body")).includes("Late private source"));
+    if (close) assert.equal(get("dialog-body").children.length, 0);
+  }
+});
+
+test("source authentication failure disconnects and clears sensitive detail", async () => {
+  const { get } = harness(researchResponses({ status: 401 }));
+  openInvestigation(get, "sources");
+  await settle();
+  await sourceButtons(get)[0].listeners.click();
+  assert.equal(get("dialog-body").children.length, 0);
+  assert.equal(get("investigation-dialog").open, false);
+  assert.equal(get("dashboard").hidden, true);
+});
+
+test("a queued native close event cannot clear a reopened investigation", async () => {
+  const { get } = harness(researchResponses());
+  openInvestigation(get, "sources");
+  await settle();
+  get("dialog-close").listeners.click();
+  openInvestigation(get, "sources");
+  get("investigation-dialog").listeners.close();
+  await settle();
+  assert.equal(get("investigation-dialog").open, true);
+  assert.ok(textOf(get("dialog-body")).includes("Review sources"));
+  assert.equal(sourceButtons(get).length, 3);
+});
+
 test("routing preview renders untrusted explanations as literal text", async () => {
   const hostile = '<img src=x onerror="alert(1)">';
   const { get, requests } = harness({

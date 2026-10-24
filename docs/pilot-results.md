@@ -202,3 +202,23 @@ These checks used synthetic data and local provider fixtures. No production
 service/database was migrated, and no real Jira, Google Workspace mutation, or
 paid provider call was made for this batch. See the
 [upgrade notes](release-2026-10-19.md) and [operator guide](operator-guide.md).
+
+## Evidence inspector verification (October 24, 2026)
+
+The read-only source inspector passed `scripts/verify.sh` with disposable
+PostgreSQL 17: vet, the full Go race suite, all 46 console tests, three binary
+builds, and the seven-case offline evaluation baseline. New fixtures cover exact
+attempt isolation (including linked retries), deleted source-file snapshots,
+observations older than the model-memory bound, PDF page/gap metadata, unknown or
+mismatched provenance, bounded payloads, field projection, and operator-only
+authentication. Excerpts remain absent from audit events.
+
+A running Wardstone service with synthetic stored research was exercised in
+headless Chromium at widths 1200 and 390. Source text remained literal, long
+tokens produced no horizontal document/dialog/source overflow, and inspection
+made no external requests. Escape/reopen, cache disposal, and disconnect cleanup
+passed; a queued native-close race found during this check now has a regression
+test. The collaborative desktop browser was disconnected, so these checks used
+local headless Chromium. No production database, real private documents, Jira,
+Workspace, or model-provider calls were used. This validates inspection behavior,
+not whether a passage semantically supports a model's claim.

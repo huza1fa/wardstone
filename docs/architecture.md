@@ -70,6 +70,18 @@ by `action_id` from `policy.evaluated`. Conversation loading can fail without
 discarding the report. The terminal console currently loads compact summaries,
 not full detail.
 
+Research citations support lazy, operator-authenticated source inspection through
+`GET /v1/investigations/{id}/evidence/{evidenceID}`. A primary-key lookup checks the
+exact investigation attempt and bounds the stored JSON before transfer. A typed
+projection accepts only matching research document/gap provenance and exposes
+bounded excerpts and source metadata, never arbitrary connector fields or local
+paths. No current-catalog lookup, file read, or network fetch occurs. The browser
+shares concurrent duplicate requests only within the open detail, renders excerpts
+as literal text, and aborts/clears source views on close or disconnect. Source reads
+are no-store and deadline bounded; full excerpts remain absent from dashboard
+polling and audit events. This supports human claim review, not automated semantic
+verification. See the [operator guide](operator-guide.md#inspect-the-evidence-behind-a-finding).
+
 ## Core domain
 
 Identifiers are distinct named string types (`TicketID`, `InvestigationID`,

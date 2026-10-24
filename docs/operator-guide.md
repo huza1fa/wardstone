@@ -5,6 +5,44 @@ Names entered in forms attribute decisions in the audit log; they are not
 separate authenticated identities. Use the console over localhost or a trusted
 HTTPS endpoint and share access only with people trusted to operate the service.
 
+## Inspect the evidence behind a finding
+
+Open an investigation and choose **View source** beneath a vendor or systems
+knowledge citation. The source expands beside the finding or rubric criterion,
+showing the stored text excerpt, collection time, source authority, content hash,
+and PDF page when recorded. It reads the original observation from that exact
+attempt, not the current file or website. Changing/removing the configured source
+does not change the stored snapshot. Source URLs are displayed as text and never
+fetched by inspection. Expand **Source details and provenance** for the timestamp,
+collector capability, source URL, extraction method, and hash.
+
+Compare the passage with the model's claim before approving a requester message.
+A valid citation does not prove that its passage supports the claim. Vendor
+claims are not independent verification; an administrator-designated independent
+report does not establish authenticity. Truncation, unreadable/scanned pages, and
+missing excerpts remain explicit gaps. The inspector does not add OCR, restore
+omitted text, or establish whether evidence was current-run mutation authority.
+
+Inspection is read only and needs no additional credentials, model calls, or
+database migration. Only supported research documents/gaps with explicit matching
+collector provenance can be opened; Google payloads and legacy observations with
+unknown provenance are not exposed. Excerpts load on demand, stay out of dashboard
+polling/audit payloads, and are cleared when closing the detail or disconnecting.
+Treat the displayed text as untrusted and potentially sensitive. The operator
+token grants access to stored research across all cases; this is not per-user
+document authorization or configurable redaction.
+
+`GET /v1/investigations/{id}/evidence/{evidenceID}` uses the operator bearer token
+and returns an `evidence` object with `id`, `investigation_id`, `capability`, `kind`,
+`observed_at`, and a `document` containing the supported source fields. This is a
+fixed-field projection, not arbitrary connector JSON, filesystem paths, or an
+original-file download. Reads have a five-second deadline, a 256 KiB stored-JSON
+ceiling, and a 24 KiB excerpt ceiling. Responses (including errors) use
+`Cache-Control: no-store`. Missing, wrong-attempt, unsupported, malformed, and
+over-budget observations all return 404; an unavailable inspection service returns
+503. A historical attempt can still be inspected using its own ID, but a retry
+cannot read its parent's evidence through the retry's URL.
+
 ## Start and manage cases
 
 Open **Start a case → Create a console case**. Enter a summary, useful details,
